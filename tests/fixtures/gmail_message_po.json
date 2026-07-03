@@ -1,0 +1,46 @@
+{
+  "id": "18d3a1b2c3d4e5f6",
+  "threadId": "18d3a1b2c3d4e5f6",
+  "labelIds": ["UNREAD", "INBOX"],
+  "snippet": "Purchase Order #BL-2024-001234 from Blinkit",
+  "internalDate": "1735689600000",
+  "payload": {
+    "partId": "",
+    "mimeType": "multipart/mixed",
+    "filename": "",
+    "headers": [
+      {"name": "From", "value": "no-reply@blinkit.com"},
+      {"name": "To", "value": "tech@letstryfoods.com"},
+      {"name": "Subject", "value": "Purchase Order #BL-2024-001234 from Blinkit"},
+      {"name": "Date", "value": "Wed, 01 Jan 2025 00:00:00 +0000"},
+      {"name": "Message-ID", "value": "<abc123@blinkit.com>"},
+      {"name": "MIME-Version", "value": "1.0"}
+    ],
+    "body": {"size": 0},
+    "parts": [
+      {
+        "partId": "0",
+        "mimeType": "text/plain",
+        "filename": "",
+        "headers": [{"name": "Content-Type", "value": "text/plain; charset=UTF-8"}],
+        "body": {
+          "size": 54,
+          "data": "UGxlYXNlIGZpbmQgYXR0YWNoZWQgeW91ciBQdXJjaGFzZSBPcmRlciBmcm9tIEJsaW5raXQu"
+        }
+      },
+      {
+        "partId": "1",
+        "mimeType": "application/pdf",
+        "filename": "PO_BL-2024-001234.pdf",
+        "headers": [
+          {"name": "Content-Type", "value": "application/pdf; name=\"PO_BL-2024-001234.pdf\""},
+          {"name": "Content-Disposition", "value": "attachment; filename=\"PO_BL-2024-001234.pdf\""}
+        ],
+        "body": {
+          "attachmentId": "ANGjdJ8a9b0c1d2e3f4g5h6i7j8k9l",
+          "size": 45231
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,139 @@
+services:
+  # ── Infrastructure ────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: edi_middleware_update
+      POSTGRES_USER: edi
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-edipass}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U edi -d edi_middleware_update"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ── API server ────────────────────────────────────────────────────────────
+  api:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://edi:${POSTGRES_PASSWORD:-edipass}@postgres:5432/edi_middleware_update
+      DATABASE_SYNC_URL: postgresql+psycopg2://edi:${POSTGRES_PASSWORD:-edipass}@postgres:5432/edi_middleware_update
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ── Scheduler (APScheduler — triggers RQ jobs on a cron) ─────────────────
+  scheduler:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://edi:${POSTGRES_PASSWORD:-edipass}@postgres:5432/edi_middleware_update
+      DATABASE_SYNC_URL: postgresql+psycopg2://edi:${POSTGRES_PASSWORD:-edipass}@postgres:5432/edi_middleware_update
+      REDIS_URL: redis://redis:6379/0
+    command: ["python", "-m", "app.workers.scheduler"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ── Worker: ingestion (pulls emails / API / scrapes) ─────────────────────
+  worker-ingest:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_SYNC_URL: postgresql+psycopg2://edi:${POSTGRES_PASSWORD:-edipass}@postgres:5432/edi_middleware_update
+      REDIS_URL: redis://redis:6379/0
+    command: ["rq", "worker", "ingest", "--url", "redis://redis:6379/0"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ── Worker: parsing (raw → canonical EDI document) ───────────────────────
+  worker-parse:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_SYNC_URL: postgresql+psycopg2://edi:${POSTGRES_PASSWORD:-edipass}@postgres:5432/edi_middleware_update
+      REDIS_URL: redis://redis:6379/0
+    command: ["rq", "worker", "parse", "--url", "redis://redis:6379/0"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ── Worker: SAP push (concurrency 1 — B1 session limits) ─────────────────
+  worker-sap:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_SYNC_URL: postgresql+psycopg2://edi:${POSTGRES_PASSWORD:-edipass}@postgres:5432/edi_middleware_update
+      REDIS_URL: redis://redis:6379/0
+    command: ["rq", "worker", "sap", "--url", "redis://redis:6379/0"]
+    deploy:
+      replicas: 1   # must not scale beyond 1 without checking B1 session pool size
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ── Frontend (Vite dev server — dev profile only) ─────────────────────────
+  frontend:
+    build:
+      context: frontend
+      dockerfile: Dockerfile
+      target: dev
+    restart: unless-stopped
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000
+    profiles:
+      - dev
+
+volumes:
+  postgres_data:
+  redis_data:

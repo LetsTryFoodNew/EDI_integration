@@ -1,0 +1,99 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "edi-middleware"
+version = "0.1.0"
+description = "EDI Middleware for SAP Business One — Let's Try Foods"
+requires-python = ">=3.11"
+dependencies = [
+    # Web framework
+    "fastapi==0.115.5",
+    "uvicorn[standard]==0.32.1",
+    # ORM + migrations
+    "sqlalchemy==2.0.36",
+    "alembic==1.14.0",
+    # DB drivers
+    "asyncpg==0.30.0",          # async postgres
+    "psycopg2-binary==2.9.10",  # sync postgres (alembic + RQ workers)
+    # Config
+    "pydantic==2.10.3",
+    "pydantic-settings==2.6.1",
+    # Queue
+    "redis==5.2.1",
+    "rq==2.1.0",
+    # Scheduler
+    "apscheduler==3.10.4",
+    # HTTP client
+    "httpx==0.28.1",
+    # Email (Gmail API)
+    "google-api-python-client==2.154.0",
+    "google-auth-httplib2==0.2.0",
+    "google-auth-oauthlib==1.2.1",
+    # PDF parsing
+    "pdfplumber==0.11.4",
+    "camelot-py==0.11.0",
+    # Excel parsing
+    "openpyxl==3.1.5",
+    "pandas==2.2.3",
+    # Web scraping
+    "playwright==1.49.0",
+    # LLM fallback parser
+    "anthropic==0.39.0",
+    # Logging
+    "structlog==24.4.0",
+    # Error tracking
+    "sentry-sdk[fastapi]==2.19.2",
+    # Utilities
+    "python-dotenv==1.0.1",
+    "python-multipart==0.0.18",    # FastAPI file uploads
+    "rapidfuzz==3.10.1",           # fuzzy SKU matching
+    "passlib[bcrypt]==1.7.4",      # password hashing for auth
+    "python-jose[cryptography]==3.3.0",  # JWT
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.4",
+    "pytest-asyncio==0.24.0",
+    "pytest-cov==6.0.0",
+    "httpx==0.28.1",           # for FastAPI TestClient
+    "respx==0.21.1",           # mock httpx in tests
+    "ruff==0.8.4",
+    "black==24.10.0",
+    "mypy==1.13.0",
+    "pre-commit==4.0.1",
+    # mypy stubs
+    "types-redis==4.6.0.20241004",
+    "types-passlib==1.7.7.20240819",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "TC"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+ignore_missing_imports = true
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "--cov=app --cov-report=term-missing"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
