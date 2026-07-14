@@ -29,6 +29,7 @@ class PoStatus(enum.StrEnum):
     SAP_CONFIRMED = "SAP_CONFIRMED"
     SAP_REJECTED = "SAP_REJECTED"
     CANCELLED = "CANCELLED"
+    SUPERSEDED = "SUPERSEDED"
 
 
 class ValidationStatus(enum.StrEnum):

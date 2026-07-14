@@ -1,0 +1,40 @@
+{
+  "po_number": "BL-2024-009999",
+  "type": "PO_CREATION",
+  "details": {
+    "issue_date": "2024-02-01",
+    "delivery_date": "2024-02-05",
+    "expiry_date": null,
+    "total_qty": 30,
+    "total_amount": 3540.0,
+    "outlet_id": "67890",
+    "buyer_details": {
+      "name": "Blinkit Dark Store - Gurugram",
+      "gstin": "06AABCT1234M1Z2",
+      "destination_address": {
+        "line1": "Plot 22, Sector 37",
+        "line2": null,
+        "city": "Gurugram",
+        "state": "Haryana",
+        "postal_code": "122001"
+      }
+    },
+    "item_data": [
+      {
+        "item_id": "200010",
+        "sku_code": "LTF-MAKHANA-80",
+        "upc": "8901234567890",
+        "name": "Peri Peri Makhana 80g",
+        "units_ordered": 30,
+        "basic_price": 90.0,
+        "mrp": 120.0,
+        "hsn_code": "20089900",
+        "tax_details": {
+          "igst_percentage": 12.0,
+          "cgst_percentage": null,
+          "sgst_percentage": null
+        }
+      }
+    ]
+  }
+}

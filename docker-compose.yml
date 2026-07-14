@@ -40,6 +40,8 @@ services:
       DATABASE_URL: postgresql+asyncpg://edi:${POSTGRES_PASSWORD:-edipass}@postgres:5432/edi_middleware_update
       DATABASE_SYNC_URL: postgresql+psycopg2://edi:${POSTGRES_PASSWORD:-edipass}@postgres:5432/edi_middleware_update
       REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./credentials:/app/credentials
     ports:
       - "8000:8000"
     depends_on:
@@ -63,6 +65,8 @@ services:
       DATABASE_URL: postgresql+asyncpg://edi:${POSTGRES_PASSWORD:-edipass}@postgres:5432/edi_middleware_update
       DATABASE_SYNC_URL: postgresql+psycopg2://edi:${POSTGRES_PASSWORD:-edipass}@postgres:5432/edi_middleware_update
       REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./credentials:/app/credentials
     command: ["python", "-m", "app.workers.scheduler"]
     depends_on:
       postgres:
@@ -78,6 +82,8 @@ services:
     environment:
       DATABASE_SYNC_URL: postgresql+psycopg2://edi:${POSTGRES_PASSWORD:-edipass}@postgres:5432/edi_middleware_update
       REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./credentials:/app/credentials
     command: ["rq", "worker", "ingest", "--url", "redis://redis:6379/0"]
     depends_on:
       postgres:

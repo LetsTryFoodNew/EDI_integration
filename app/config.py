@@ -77,7 +77,12 @@ class Settings(BaseSettings):
     # ── Render proxy (local dev) ──────────────────────────────────────────────
     render_url: str = ""
 
-    # ── Attachments ───────────────────────────────────────────────────────────
+    # ── Cloudinary (attachment storage for PDF / Excel) ───────────────────────
+    cloudinary_cloud_name: str = ""
+    cloudinary_api_key: str = ""
+    cloudinary_api_secret: str = ""
+
+    # ── Attachments (local fallback path, used only when Cloudinary is not set) ─
     attachment_base_path: str = "./data/attachments"
 
 

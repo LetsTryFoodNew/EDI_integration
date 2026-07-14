@@ -1,0 +1,86 @@
+{
+  "data": {
+    "purchaseOrders": [
+      {
+        "purchaseOrderNumber": "P365999",
+        "purchaseOrderDate": "2024-01-15T00:00:00Z",
+        "vendorCode": "V001",
+        "eventId": "evt_abc123def456",
+        "totalAmount": 51390.0,
+        "expiringUrlForPoPDF": "https://example.zepto.in/po/pdf?token=abc123",
+        "buyerDetails": {
+          "gstin": "27AABCT1234M1Z5",
+          "name": "Zepto Dark Store - Andheri",
+          "address": "Unit 9, Marol Industrial Estate, Mumbai 400093"
+        },
+        "lineItems": [
+          {
+            "lineNumber": 1,
+            "productIdentifier": {
+              "buyerProductIdentifier": {
+                "skuCode": "Z-SKU-001",
+                "productName": "Peri Peri Makhana 80g"
+              }
+            },
+            "quantity": {
+              "orderedQuantity": {
+                "amount": 100,
+                "unit": "PC"
+              }
+            },
+            "pricing": {
+              "unitPrice": 90.0
+            },
+            "taxDetails": {
+              "hsnCode": "20089900",
+              "cgstRate": 6.0,
+              "sgstRate": 6.0,
+              "igstRate": 0.0
+            }
+          }
+        ]
+      },
+      {
+        "purchaseOrderNumber": "P366000",
+        "purchaseOrderDate": "2024-01-16T00:00:00Z",
+        "vendorCode": "V001",
+        "eventId": "evt_bcd234efg567",
+        "totalAmount": 7560.0,
+        "expiringUrlForPoPDF": null,
+        "buyerDetails": {
+          "gstin": "27AABCT1234M1Z5",
+          "name": "Zepto Dark Store - Powai",
+          "address": "Shop 3, Hiranandani Gardens, Powai, Mumbai 400076"
+        },
+        "lineItems": [
+          {
+            "lineNumber": 1,
+            "productIdentifier": {
+              "buyerProductIdentifier": {
+                "skuCode": "Z-SKU-002",
+                "productName": "Himalayan Soya Chunks 100g"
+              }
+            },
+            "quantity": {
+              "orderedQuantity": {
+                "amount": 150,
+                "unit": "PC"
+              }
+            },
+            "pricing": {
+              "unitPrice": 45.0
+            },
+            "taxDetails": {
+              "hsnCode": "21031000",
+              "cgstRate": 6.0,
+              "sgstRate": 6.0,
+              "igstRate": 0.0
+            }
+          }
+        ]
+      }
+    ],
+    "hasNext": false,
+    "totalCount": 2
+  }
+}

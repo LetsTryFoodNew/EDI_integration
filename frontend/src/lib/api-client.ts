@@ -8,12 +8,16 @@ export const apiClient = axios.create({
   withCredentials: true,
 });
 
-// 401 → redirect to login
+// 401 → clear cached user and redirect to login (unless already there,
+// which would cause an infinite reload loop)
 apiClient.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401) {
-      window.location.href = "/login";
+      localStorage.removeItem("edi_user");
+      if (window.location.pathname !== "/login") {
+        window.location.href = "/login";
+      }
     }
     return Promise.reject(error);
   },

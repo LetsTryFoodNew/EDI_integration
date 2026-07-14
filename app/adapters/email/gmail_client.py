@@ -15,7 +15,7 @@ Setup: run `python scripts/auth_gmail.py` once to produce token.json.
 from __future__ import annotations
 
 import base64
-import logging
+import contextlib
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -182,10 +182,8 @@ class GmailClient:
 
         # Prefer the Date header if present (more accurate than internalDate)
         if "date" in headers:
-            try:
+            with contextlib.suppress(Exception):
                 received_at = parsedate_to_datetime(headers["date"]).astimezone(UTC)
-            except Exception:
-                pass
 
         body_text: str | None = None
         body_html: str | None = None

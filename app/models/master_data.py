@@ -14,6 +14,7 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     Index,
+    Integer,
     Numeric,
     String,
     Text,
@@ -99,6 +100,9 @@ class MaterialMaster(Base):
     gst_rate: Mapped[float | None] = mapped_column(Numeric(5, 2))
     uom: Mapped[str] = mapped_column(String(20), nullable=False)
     uom_group: Mapped[str | None] = mapped_column(String(50))
+    case_size: Mapped[int | None] = mapped_column(Integer)
+    ean: Mapped[str | None] = mapped_column(String(14), index=True)
+    mrp: Mapped[float | None] = mapped_column(Numeric(10, 2))
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)

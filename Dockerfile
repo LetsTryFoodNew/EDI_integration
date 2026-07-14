@@ -30,6 +30,7 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 COPY app/ ./app/
 COPY alembic/ ./alembic/
 COPY alembic.ini .
+COPY scripts/ ./scripts/
 
 # Non-root user
 RUN useradd -m -u 1000 ediuser && chown -R ediuser /app

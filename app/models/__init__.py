@@ -5,6 +5,7 @@ Import all models here so that:
 """
 from app.models._enums import EdiDocType, MappingStatus, PoStatus, SourceChannel, ValidationStatus
 from app.models.asn import EdiAdvanceShipNotice, EdiAsnLineItem
+from app.models.audit_log import AuditLog
 from app.models.b1_log import B1ApiLog
 from app.models.edi_po import (
     EdiPoLineItem,
@@ -22,6 +23,7 @@ from app.models.master_data import (
 )
 from app.models.outbound import EdiOutboundMessage
 from app.models.raw_messages import RawMessage
+from app.models.users import User
 
 __all__ = [
     "EdiDocType",
@@ -43,6 +45,8 @@ __all__ = [
     "ShipToMapping",
     "SkuMapping",
     "TradingPartner",
+    "AuditLog",
     "EdiOutboundMessage",
     "RawMessage",
+    "User",
 ]

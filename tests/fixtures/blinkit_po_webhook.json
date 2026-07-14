@@ -1,0 +1,55 @@
+{
+  "po_number": "BL-2024-001234",
+  "type": "PO_CREATION",
+  "details": {
+    "issue_date": "2024-01-15",
+    "delivery_date": "2024-01-18",
+    "expiry_date": "2024-01-25",
+    "total_qty": 150,
+    "total_amount": 30870.0,
+    "outlet_id": "12345",
+    "buyer_details": {
+      "name": "Blinkit Dark Store - Andheri",
+      "gstin": "27AABCT1234M1Z5",
+      "destination_address": {
+        "line1": "Unit 4B, Marol MIDC",
+        "line2": "Andheri East",
+        "city": "Mumbai",
+        "state": "Maharashtra",
+        "postal_code": "400093"
+      }
+    },
+    "item_data": [
+      {
+        "item_id": "100001",
+        "sku_code": "LTF-MAKHANA-80",
+        "upc": "8901234567890",
+        "name": "Peri Peri Makhana 80g",
+        "units_ordered": 100,
+        "basic_price": 90.0,
+        "mrp": 120.0,
+        "hsn_code": "20089900",
+        "tax_details": {
+          "igst_percentage": null,
+          "cgst_percentage": 6.0,
+          "sgst_percentage": 6.0
+        }
+      },
+      {
+        "item_id": "100002",
+        "sku_code": "LTF-SOYA-100",
+        "upc": "8901234567891",
+        "name": "Himalayan Soya Chunks 100g",
+        "units_ordered": 50,
+        "basic_price": 45.0,
+        "mrp": 60.0,
+        "hsn_code": "21031000",
+        "tax_details": {
+          "igst_percentage": null,
+          "cgst_percentage": 6.0,
+          "sgst_percentage": 6.0
+        }
+      }
+    ]
+  }
+}

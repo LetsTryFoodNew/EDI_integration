@@ -1,9 +1,9 @@
 """
 Ingest workflow — phase 1 of the processing pipeline:
-  Gmail message → raw_messages row + attachment files on disk.
+  Gmail message → raw_messages row + attachment uploaded to Cloudinary.
 
-Does NOT parse or validate. Enqueues a parse job after save (stub for now;
-Phase 3 will replace the stub with real parser dispatch).
+Does NOT parse or validate. After saving, enqueues a parse_raw_message_job
+via RQ so the parse worker picks it up asynchronously.
 
 Idempotency: the raw_messages table has a UNIQUE constraint on
 (trading_partner_id, external_id). A pre-check + that constraint together
@@ -13,14 +13,14 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import UTC
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
-from app.adapters.email.base import BaseEmailAdapter, InboundEmail
 from app.adapters.email.gmail_client import GmailClient
+
+if TYPE_CHECKING:
+    from app.adapters.email.base import BaseEmailAdapter, InboundEmail
 from app.config import get_settings
 from app.db import SyncSessionLocal
 from app.models import RawMessage, TradingPartner
@@ -44,8 +44,8 @@ class IngestResult:
 def ingest_label(partner_code: str, label_name: str) -> IngestResult:
     """
     Pull new messages from a Gmail label and persist them as RawMessage rows.
-    Attachments are saved to disk under:
-      <attachment_base_path>/<partner_code>/<yyyy-mm-dd>/<message_id>/<filename>
+    Attachments are uploaded to Cloudinary (or local disk when Cloudinary
+    credentials are absent, e.g. dev).
 
     This is the entry point called by the RQ job.
     """
@@ -58,7 +58,10 @@ def ingest_label(partner_code: str, label_name: str) -> IngestResult:
     )
 
     with SyncSessionLocal() as session:
-        partner = session.query(TradingPartner).filter_by(code=partner_code).first()
+        from sqlalchemy import select
+        partner = session.execute(
+            select(TradingPartner).where(TradingPartner.code == partner_code)
+        ).scalar_one_or_none()
         if not partner:
             log.error("ingest.partner_not_found", partner_code=partner_code)
             result.errors.append(f"TradingPartner '{partner_code}' not in DB")
@@ -89,11 +92,13 @@ def _process_one(
     result: IngestResult,
 ) -> None:
     # Idempotency pre-check — avoids fetching the full message body on duplicates
-    already = (
-        session.query(RawMessage)
-        .filter_by(trading_partner_id=partner.id, external_id=msg_id)
-        .first()
-    )
+    from sqlalchemy import select
+    already = session.execute(
+        select(RawMessage).where(
+            RawMessage.trading_partner_id == partner.id,
+            RawMessage.external_id == msg_id,
+        )
+    ).scalar_one_or_none()
     if already:
         result.skipped_duplicate += 1
         return
@@ -133,8 +138,7 @@ def _process_one(
         attachments=len(attachment_paths),
     )
 
-    # Phase 3 will replace this stub with real parser dispatch
-    _enqueue_parse_stub(raw.id)
+    _enqueue_parse_job(raw.id)
 
 
 def _save_attachments(
@@ -143,13 +147,14 @@ def _save_attachments(
     partner_code: str,
 ) -> list[dict[str, Any]]:
     """
-    Download all attachments for an email and write them to disk.
+    Download all attachments and upload them to Cloudinary (or local disk
+    in dev when Cloudinary credentials are absent).
     Returns the attachment_paths list for the RawMessage row.
     """
+    from app.adapters.storage import upload_attachment
+
     saved: list[dict[str, Any]] = []
     date_str = email.received_at.strftime("%Y-%m-%d")
-    base = Path(settings.attachment_base_path) / partner_code / date_str / email.message_id
-    base.mkdir(parents=True, exist_ok=True)
 
     for att in email.attachments:
         try:
@@ -165,15 +170,16 @@ def _save_attachments(
                 )
                 continue
 
-            dest = base / att.filename
-            dest.write_bytes(data)
-            saved.append({
-                "filename": att.filename,
-                "path": str(dest),
-                "mime_type": att.mime_type,
-                "size_bytes": len(data),
-            })
-            log.debug("ingest.attachment_saved", path=str(dest))
+            record = upload_attachment(
+                data=data,
+                filename=att.filename,
+                partner_code=partner_code,
+                message_id=email.message_id,
+                date_str=date_str,
+                mime_type=att.mime_type,
+            )
+            saved.append(record)
+            log.debug("ingest.attachment_stored", url=record["url"], filename=att.filename)
         except Exception as exc:
             log.error(
                 "ingest.attachment_error",
@@ -185,12 +191,29 @@ def _save_attachments(
     return saved
 
 
-def _enqueue_parse_stub(raw_message_id: uuid.UUID) -> None:
+def _enqueue_parse_job(raw_message_id: uuid.UUID) -> None:
     """
-    Stub: Phase 3 will enqueue a real parse job here.
-    For now, just log that a job would be queued.
+    Enqueue a parse job for this raw message. The job is consumed by the
+    ingest worker and calls parse_and_persist(raw_message_id).
     """
-    log.debug("ingest.parse_stub", raw_message_id=str(raw_message_id))
+    try:
+        from redis import Redis
+        from rq import Queue
+
+        from app.workers.jobs import parse_raw_message_job
+
+        redis_conn = Redis.from_url(settings.redis_url)
+        queue = Queue("ingest", connection=redis_conn)
+        queue.enqueue(
+            parse_raw_message_job,
+            str(raw_message_id),
+            job_timeout=300,
+        )
+        log.debug("ingest.parse_enqueued", raw_message_id=str(raw_message_id))
+    except Exception as exc:
+        # Enqueue failure is non-fatal — the message is already saved; the
+        # scheduler will retry via a sweep of PENDING raw_messages (Phase 10).
+        log.error("ingest.enqueue_error", raw_message_id=str(raw_message_id), error=str(exc))
 
 
 # ── Adapter registry ──────────────────────────────────────────────────────────
@@ -207,10 +230,11 @@ def _get_adapter(partner_code: str) -> BaseEmailAdapter | None:
 
 
 def _build_registry() -> dict[str, BaseEmailAdapter]:
-    from app.adapters.email.blinkit_email import BlinkitEmailAdapter
+    from app.adapters.email.swiggy_email import SwiggyEmailAdapter
 
     adapters: list[BaseEmailAdapter] = [
-        BlinkitEmailAdapter(),
-        # Phase 2+: add SwiggyEmailAdapter, BigBasketEmailAdapter, etc.
+        SwiggyEmailAdapter(),
+        # Add more email adapters here as partners are onboarded:
+        # BigBasketEmailAdapter(), DmartEmailAdapter(), etc.
     ]
     return {a.get_partner_code(): a for a in adapters}

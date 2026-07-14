@@ -18,6 +18,11 @@ from app.adapters.email.base import AttachmentMeta, InboundEmail
 from app.adapters.email.blinkit_email import BlinkitEmailAdapter
 from app.adapters.email.gmail_client import GmailClient
 
+# Import the workflow module so patch.object can reference it.
+# Must be imported here (not inside tests) to ensure it appears as an attribute
+# of its parent package before any patch.object calls.
+import app.workflows.ingest_to_canonical as _wf  # noqa: E402
+
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
 
 
@@ -34,7 +39,10 @@ def _make_inbound_email(**kwargs) -> InboundEmail:
         subject="Purchase Order #BL-2024-001234 from Blinkit",
         sender="no-reply@blinkit.com",
         received_at=datetime(2025, 1, 1, tzinfo=UTC),
-        headers={"from": "no-reply@blinkit.com", "subject": "Purchase Order #BL-2024-001234 from Blinkit"},
+        headers={
+            "from": "no-reply@blinkit.com",
+            "subject": "Purchase Order #BL-2024-001234 from Blinkit",
+        },
         body_text="Please find attached your Purchase Order from Blinkit.",
         body_html=None,
         label_ids=["UNREAD"],
@@ -61,7 +69,7 @@ class TestGmailClientParsing:
         assert email.thread_id == "18d3a1b2c3d4e5f6"
         assert email.subject == "Purchase Order #BL-2024-001234 from Blinkit"
         assert email.sender == "no-reply@blinkit.com"
-        assert email.received_at.tzinfo is not None  # timezone-aware
+        assert email.received_at.tzinfo is not None
         assert email.received_at.year == 2025
 
     def test_parse_message_extracts_body_text(self):
@@ -111,7 +119,7 @@ class TestGmailClientParsing:
 
     def test_internal_date_fallback_when_no_date_header(self):
         raw = _load_fixture("gmail_message_po.json")
-        # Remove the Date header
+        # Remove the Date header to force internalDate fallback
         raw["payload"]["headers"] = [
             h for h in raw["payload"]["headers"] if h["name"] != "Date"
         ]
@@ -130,35 +138,22 @@ class TestBlinkitEmailAdapter:
         self.adapter = BlinkitEmailAdapter()
 
     def test_accepts_po_from_blinkit_domain(self):
-        email = _make_inbound_email(
-            sender="orders@blinkit.com",
-            subject="Weekly report",
-            attachments=[],
-        )
+        email = _make_inbound_email(sender="orders@blinkit.com", subject="Weekly report")
         assert self.adapter.is_po_email(email) is True
 
     def test_accepts_po_from_grofers_legacy_domain(self):
-        email = _make_inbound_email(
-            sender="no-reply@grofers.com",
-            subject="Dispatch notification",
-            attachments=[],
-        )
+        email = _make_inbound_email(sender="no-reply@grofers.com", subject="Dispatch")
         assert self.adapter.is_po_email(email) is True
 
     def test_accepts_by_po_subject_keyword(self):
         email = _make_inbound_email(
             sender="unknown@example.com",
             subject="Purchase Order #BL12345 for Let's Try Foods",
-            attachments=[],
         )
         assert self.adapter.is_po_email(email) is True
 
     def test_accepts_by_po_hash_keyword(self):
-        email = _make_inbound_email(
-            sender="ops@somedomain.com",
-            subject="PO #12345 approval",
-            attachments=[],
-        )
+        email = _make_inbound_email(sender="ops@somedomain.com", subject="PO #12345 approval")
         assert self.adapter.is_po_email(email) is True
 
     def test_accepts_by_pdf_attachment(self):
@@ -169,19 +164,11 @@ class TestBlinkitEmailAdapter:
             part_id="1",
             attachment_id="att1",
         )
-        email = _make_inbound_email(
-            sender="vendor@random.com",
-            subject="Please review",
-            attachments=[att],
-        )
+        email = _make_inbound_email(sender="vendor@random.com", subject="Please review", attachments=[att])
         assert self.adapter.is_po_email(email) is True
 
     def test_rejects_newsletter_no_pdf_no_po_subject(self):
-        email = _make_inbound_email(
-            sender="newsletter@random.com",
-            subject="Your weekly digest",
-            attachments=[],
-        )
+        email = _make_inbound_email(sender="newsletter@random.com", subject="Your weekly digest")
         assert self.adapter.is_po_email(email) is False
 
     def test_adapter_codes(self):
@@ -193,8 +180,10 @@ class TestBlinkitEmailAdapter:
 
 class TestIngestLabelWorkflow:
     """
-    Tests for app.workflows.ingest_to_canonical.ingest_label.
-    Mocks: GmailClient (no network) and SyncSessionLocal (no DB).
+    Tests for ingest_to_canonical.ingest_label.
+    Patches: GmailClient (no network) and SyncSessionLocal (no DB).
+    Uses patch.object on the already-imported _wf module to avoid Python 3.14
+    pkgutil.resolve_name issues with submodule dotted paths.
     """
 
     def _make_partner(self, code: str = "BLINKIT") -> MagicMock:
@@ -203,48 +192,39 @@ class TestIngestLabelWorkflow:
         partner.code = code
         return partner
 
-    def test_saves_new_message(self, tmp_path):
-        partner = self._make_partner()
-        email = _make_inbound_email()
-
+    def _make_session(self, side_effects: list) -> MagicMock:
         session = MagicMock()
         session.__enter__ = MagicMock(return_value=session)
         session.__exit__ = MagicMock(return_value=False)
-        # Partner found; no existing duplicate
-        session.query.return_value.filter_by.return_value.first.side_effect = [
-            partner,    # TradingPartner lookup
-            None,       # duplicate check (no existing raw_message)
-        ]
+        # ingest_to_canonical now uses session.execute(...).scalar_one_or_none()
+        session.execute.return_value.scalar_one_or_none.side_effect = side_effects
+        return session
 
+    def test_saves_new_message(self, tmp_path):
+        partner = self._make_partner()
+        att = AttachmentMeta(
+            filename="PO.pdf", mime_type="application/pdf",
+            size_bytes=24, part_id="1", attachment_id="att1",
+        )
+        email = _make_inbound_email(attachments=[att])
+        pdf_bytes = b"%PDF-1.4 fake"
+
+        session = self._make_session([partner, None])  # partner found; no duplicate
         gmail = MagicMock()
         gmail.list_message_ids.return_value = [email.message_id]
         gmail.get_message.return_value = email
-        gmail.download_attachment.return_value = b"%PDF-1.4 fake pdf content"
-
-        email_with_att = _make_inbound_email(
-            attachments=[
-                AttachmentMeta(
-                    filename="PO.pdf",
-                    mime_type="application/pdf",
-                    size_bytes=24,
-                    part_id="1",
-                    attachment_id="att1",
-                )
-            ]
-        )
-        gmail.get_message.return_value = email_with_att
+        gmail.download_attachment.return_value = pdf_bytes
 
         with (
-            patch("app.workflows.ingest_to_canonical.SyncSessionLocal", return_value=session),
-            patch("app.workflows.ingest_to_canonical.GmailClient", return_value=gmail),
-            patch("app.config.get_settings") as mock_settings,
+            patch.object(_wf, "SyncSessionLocal", return_value=session),
+            patch.object(_wf, "GmailClient", return_value=gmail),
+            patch.object(_wf, "settings") as mock_settings,
         ):
-            mock_settings.return_value.gmail_credentials_path = "x"
-            mock_settings.return_value.gmail_token_path = "y"
-            mock_settings.return_value.attachment_base_path = str(tmp_path)
+            mock_settings.gmail_credentials_path = "x"
+            mock_settings.gmail_token_path = "y"
+            mock_settings.attachment_base_path = str(tmp_path)
 
-            from app.workflows.ingest_to_canonical import ingest_label
-            result = ingest_label("BLINKIT", "BLINKIT_PO")
+            result = _wf.ingest_label("BLINKIT", "BLINKIT_PO")
 
         assert result.saved == 1
         assert result.skipped_duplicate == 0
@@ -255,53 +235,39 @@ class TestIngestLabelWorkflow:
         partner = self._make_partner()
         existing_raw = MagicMock()
 
-        session = MagicMock()
-        session.__enter__ = MagicMock(return_value=session)
-        session.__exit__ = MagicMock(return_value=False)
-        session.query.return_value.filter_by.return_value.first.side_effect = [
-            partner,        # TradingPartner lookup
-            existing_raw,   # duplicate found
-        ]
-
+        session = self._make_session([partner, existing_raw])  # duplicate found
         gmail = MagicMock()
         gmail.list_message_ids.return_value = ["18d3a1b2c3d4e5f6"]
 
         with (
-            patch("app.workflows.ingest_to_canonical.SyncSessionLocal", return_value=session),
-            patch("app.workflows.ingest_to_canonical.GmailClient", return_value=gmail),
-            patch("app.config.get_settings") as mock_settings,
+            patch.object(_wf, "SyncSessionLocal", return_value=session),
+            patch.object(_wf, "GmailClient", return_value=gmail),
+            patch.object(_wf, "settings") as mock_settings,
         ):
-            mock_settings.return_value.gmail_credentials_path = "x"
-            mock_settings.return_value.gmail_token_path = "y"
-            mock_settings.return_value.attachment_base_path = str(tmp_path)
+            mock_settings.gmail_credentials_path = "x"
+            mock_settings.gmail_token_path = "y"
+            mock_settings.attachment_base_path = str(tmp_path)
 
-            from app.workflows.ingest_to_canonical import ingest_label
-            result = ingest_label("BLINKIT", "BLINKIT_PO")
+            result = _wf.ingest_label("BLINKIT", "BLINKIT_PO")
 
         assert result.saved == 0
         assert result.skipped_duplicate == 1
-        # get_message should NOT be called (short-circuit after duplicate check)
+        # get_message must NOT be called — short-circuits after duplicate pre-check
         gmail.get_message.assert_not_called()
 
     def test_unknown_partner_returns_error(self, tmp_path):
-        session = MagicMock()
-        session.__enter__ = MagicMock(return_value=session)
-        session.__exit__ = MagicMock(return_value=False)
-        session.query.return_value.filter_by.return_value.first.return_value = None
-
-        gmail = MagicMock()
+        session = self._make_session([None])  # no partner in DB
 
         with (
-            patch("app.workflows.ingest_to_canonical.SyncSessionLocal", return_value=session),
-            patch("app.workflows.ingest_to_canonical.GmailClient", return_value=gmail),
-            patch("app.config.get_settings") as mock_settings,
+            patch.object(_wf, "SyncSessionLocal", return_value=session),
+            patch.object(_wf, "GmailClient", return_value=MagicMock()),
+            patch.object(_wf, "settings") as mock_settings,
         ):
-            mock_settings.return_value.gmail_credentials_path = "x"
-            mock_settings.return_value.gmail_token_path = "y"
-            mock_settings.return_value.attachment_base_path = str(tmp_path)
+            mock_settings.gmail_credentials_path = "x"
+            mock_settings.gmail_token_path = "y"
+            mock_settings.attachment_base_path = str(tmp_path)
 
-            from app.workflows.ingest_to_canonical import ingest_label
-            result = ingest_label("UNKNOWN_PARTNER", "SOME_LABEL")
+            result = _wf.ingest_label("UNKNOWN_PARTNER", "SOME_LABEL")
 
         assert result.saved == 0
         assert len(result.errors) == 1
@@ -314,30 +280,21 @@ class TestIngestLabelWorkflow:
             subject="Your weekly digest",
             attachments=[],
         )
-
-        session = MagicMock()
-        session.__enter__ = MagicMock(return_value=session)
-        session.__exit__ = MagicMock(return_value=False)
-        session.query.return_value.filter_by.return_value.first.side_effect = [
-            partner,    # TradingPartner lookup
-            None,       # duplicate check
-        ]
-
+        session = self._make_session([partner, None])
         gmail = MagicMock()
         gmail.list_message_ids.return_value = [newsletter.message_id]
         gmail.get_message.return_value = newsletter
 
         with (
-            patch("app.workflows.ingest_to_canonical.SyncSessionLocal", return_value=session),
-            patch("app.workflows.ingest_to_canonical.GmailClient", return_value=gmail),
-            patch("app.config.get_settings") as mock_settings,
+            patch.object(_wf, "SyncSessionLocal", return_value=session),
+            patch.object(_wf, "GmailClient", return_value=gmail),
+            patch.object(_wf, "settings") as mock_settings,
         ):
-            mock_settings.return_value.gmail_credentials_path = "x"
-            mock_settings.return_value.gmail_token_path = "y"
-            mock_settings.return_value.attachment_base_path = str(tmp_path)
+            mock_settings.gmail_credentials_path = "x"
+            mock_settings.gmail_token_path = "y"
+            mock_settings.attachment_base_path = str(tmp_path)
 
-            from app.workflows.ingest_to_canonical import ingest_label
-            result = ingest_label("BLINKIT", "BLINKIT_PO")
+            result = _wf.ingest_label("BLINKIT", "BLINKIT_PO")
 
         assert result.saved == 0
         assert result.skipped_filter == 1
@@ -346,11 +303,8 @@ class TestIngestLabelWorkflow:
     def test_attachment_saved_to_disk(self, tmp_path):
         partner = self._make_partner()
         att = AttachmentMeta(
-            filename="PO_001.pdf",
-            mime_type="application/pdf",
-            size_bytes=8,
-            part_id="1",
-            attachment_id="att99",
+            filename="PO_001.pdf", mime_type="application/pdf",
+            size_bytes=8, part_id="1", attachment_id="att99",
         )
         email = _make_inbound_email(
             received_at=datetime(2025, 6, 15, tzinfo=UTC),
@@ -358,33 +312,24 @@ class TestIngestLabelWorkflow:
         )
         pdf_bytes = b"%PDF-1.4"
 
-        session = MagicMock()
-        session.__enter__ = MagicMock(return_value=session)
-        session.__exit__ = MagicMock(return_value=False)
-        session.query.return_value.filter_by.return_value.first.side_effect = [
-            partner,
-            None,
-        ]
-
+        session = self._make_session([partner, None])
         gmail = MagicMock()
         gmail.list_message_ids.return_value = [email.message_id]
         gmail.get_message.return_value = email
         gmail.download_attachment.return_value = pdf_bytes
 
         with (
-            patch("app.workflows.ingest_to_canonical.SyncSessionLocal", return_value=session),
-            patch("app.workflows.ingest_to_canonical.GmailClient", return_value=gmail),
-            patch("app.config.get_settings") as mock_settings,
+            patch.object(_wf, "SyncSessionLocal", return_value=session),
+            patch.object(_wf, "GmailClient", return_value=gmail),
+            patch.object(_wf, "settings") as mock_settings,
         ):
-            mock_settings.return_value.gmail_credentials_path = "x"
-            mock_settings.return_value.gmail_token_path = "y"
-            mock_settings.return_value.attachment_base_path = str(tmp_path)
+            mock_settings.gmail_credentials_path = "x"
+            mock_settings.gmail_token_path = "y"
+            mock_settings.attachment_base_path = str(tmp_path)
 
-            from app.workflows.ingest_to_canonical import ingest_label
-            result = ingest_label("BLINKIT", "BLINKIT_PO")
+            result = _wf.ingest_label("BLINKIT", "BLINKIT_PO")
 
-        # File should be on disk
-        expected_path = tmp_path / "BLINKIT" / "2025-06-15" / email.message_id / "PO_001.pdf"
-        assert expected_path.exists()
-        assert expected_path.read_bytes() == pdf_bytes
+        expected = tmp_path / "BLINKIT" / "2025-06-15" / email.message_id / "PO_001.pdf"
+        assert expected.exists(), f"Expected attachment at {expected}"
+        assert expected.read_bytes() == pdf_bytes
         assert result.saved == 1

@@ -37,11 +37,7 @@ from app.models._enums import MappingStatus, PoStatus, SourceChannel, Validation
 @pytest.fixture(scope="session")
 def engine():
     """Creates all tables in a test DB, drops them after the session."""
-    from app.config import get_settings
-    settings = get_settings()
-    test_url = settings.database_sync_url.replace(
-        "/edi_middleware", "/edi_middleware_test"
-    )
+    test_url = "postgresql+psycopg2://edi:edipass@localhost:5433/edi_middleware_test"
     eng = create_engine(test_url, echo=False)
     Base.metadata.create_all(eng)
     yield eng

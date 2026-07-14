@@ -1,0 +1,33 @@
+# ── Secrets — NEVER commit ────────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+credentials/
+*.pem
+*.key
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ── Node / frontend ───────────────────────────────────────────────────────────
+node_modules/
+frontend/dist/
+frontend/.env.local
+
+# ── Data & runtime artifacts ──────────────────────────────────────────────────
+data/
+*.log
+
+# ── OS / editor ───────────────────────────────────────────────────────────────
+.DS_Store
+.idea/
+*.swp
