@@ -216,6 +216,7 @@ def _enqueue_parse_job(raw_message_id: uuid.UUID) -> None:
         log.error("ingest.enqueue_error", raw_message_id=str(raw_message_id), error=str(exc))
 
 
+
 # ── Adapter registry ──────────────────────────────────────────────────────────
 # Partner code → adapter instance. Adapters are stateless so one instance each.
 

@@ -55,6 +55,7 @@ class POListItem(BaseModel):
     currency: str
     line_count: int
     b1_sales_order_doc_num: int | None
+    received_at: datetime
     created_at: datetime
     updated_at: datetime
 

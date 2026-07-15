@@ -56,6 +56,11 @@ def list_pos(
 
     from app.models.edi_po import EdiPoLineItem, EdiPurchaseOrder
     from app.models.master_data import TradingPartner
+    from app.models.raw_messages import RawMessage
+
+    # "Received" = when the PO email/webhook arrived, not when the parser
+    # created the canonical record (which can be days later on re-parse).
+    received_at = func.coalesce(RawMessage.received_at, EdiPurchaseOrder.created_at).label("received_at")
 
     q = (
         select(
@@ -63,12 +68,14 @@ def list_pos(
             TradingPartner.code.label("partner_code"),
             TradingPartner.name.label("partner_name"),
             func.count(EdiPoLineItem.id).label("line_count"),
+            received_at,
         )
         .join(TradingPartner, EdiPurchaseOrder.trading_partner_id == TradingPartner.id)
         .outerjoin(EdiPoLineItem, EdiPoLineItem.po_id == EdiPurchaseOrder.id)
+        .outerjoin(RawMessage, RawMessage.id == EdiPurchaseOrder.raw_message_id)
         .where(EdiPurchaseOrder.deleted_at.is_(None))
-        .group_by(EdiPurchaseOrder.id, TradingPartner.code, TradingPartner.name)
-        .order_by(EdiPurchaseOrder.created_at.desc())
+        .group_by(EdiPurchaseOrder.id, TradingPartner.code, TradingPartner.name, RawMessage.received_at)
+        .order_by(received_at.desc())
     )
 
     if partner_code:
@@ -80,9 +87,9 @@ def list_pos(
             raise HTTPException(status_code=400, detail=f"Invalid po_status '{po_status}'. Valid: {sorted(valid)}")
         q = q.where(EdiPurchaseOrder.po_status == po_status)
     if date_from:
-        q = q.where(EdiPurchaseOrder.created_at >= date_from)
+        q = q.where(func.coalesce(RawMessage.received_at, EdiPurchaseOrder.created_at) >= date_from)
     if date_to:
-        q = q.where(EdiPurchaseOrder.created_at <= date_to)
+        q = q.where(func.coalesce(RawMessage.received_at, EdiPurchaseOrder.created_at) <= date_to)
     if search:
         q = q.where(EdiPurchaseOrder.buyer_po_number.ilike(f"%{search}%"))
 
@@ -102,6 +109,7 @@ def list_pos(
             currency=row.EdiPurchaseOrder.currency or "INR",
             line_count=row.line_count,
             b1_sales_order_doc_num=row.EdiPurchaseOrder.b1_sales_order_doc_num,
+            received_at=row.received_at,
             created_at=row.EdiPurchaseOrder.created_at,
             updated_at=row.EdiPurchaseOrder.updated_at,
         )

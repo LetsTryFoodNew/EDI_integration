@@ -1,5 +1,15 @@
 # Changelog
 
+## Phase 8.1 — Inbox Search/Date Filters + PO Received-At (2026-07-15)
+- `GET /api/inbox/messages` — added `search` (matches PO number or email subject via JSONB `headers.subject`), `date_from`, and `date_to` query params; dates compared in IST timezone
+- `InboxPage.tsx` — search box (350ms debounce → URL param), date-range pickers, "Clear" button; filter state URL-synced so page is bookmarkable; pagination preserved across filter changes; empty state distinguishes filtered vs unfiltered
+- `InboxDetailPage.tsx` + `/inbox/:messageId` route — individual email detail view with attachment download, parse retry, link to canonical PO
+- `GET /api/pos` — `received_at` column added (coalesces `RawMessage.received_at` → `EdiPurchaseOrder.created_at`); PO list now sorted by received time; date filters use received_at; `version` field added for PO revision display
+- `POListItem` schema + `POListItem` TypeScript type updated with `received_at: datetime`
+- PO list "Received" sortable column (replaces created_at); version chip (`v2`) shown on revised POs
+- `SUPERSEDED` and `RECEIVED` statuses added to PO list filter dropdown and StatusBadge config
+- Fixed `E741` ruff warning in `swiggy_parser.py` (ambiguous variable `l` → `part`)
+
 ## Phase 3.5 — PO Revision Flow (2026-07-14)
 - Migration `0004` — added `SUPERSEDED` to `po_status_t` enum
 - When a partner re-sends a PO with the same PO number (revised qty/SKU/expiry after e.g. a case-size rejection), the new email now creates **version N+1** of the PO and the previous version is marked **SUPERSEDED** (read-only, hidden from exceptions queue, blocked from edit/SAP push)

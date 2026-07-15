@@ -247,7 +247,7 @@ def _parse_ship_to(raw: str | None) -> EDIAddress | None:
     if not raw:
         return None
     # Split first line as name, rest as address
-    lines = [l.strip() for l in raw.split(",") if l.strip()]
+    lines = [part.strip() for part in raw.split(",") if part.strip()]
     if not lines:
         return None
     name = "Scootsy Logistics Private Limited"

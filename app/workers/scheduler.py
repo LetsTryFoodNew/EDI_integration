@@ -80,6 +80,7 @@ def _get_email_partners() -> list[tuple[str, str]]:
     return [(code, label) for code, label in rows if label]
 
 
+
 def _get_api_partners() -> list[str]:
     """Return partner_codes for active API/WEBHOOK partners that need polling."""
     from sqlalchemy import select
@@ -149,6 +150,7 @@ def _enqueue_retry_pending_outbound(outbound_queue: Queue) -> None:
         failure_ttl=86400,
     )
     log.info("scheduler.retry_pending_outbound_enqueued", job_id=job.id)
+
 
 
 def build_scheduler() -> BlockingScheduler:

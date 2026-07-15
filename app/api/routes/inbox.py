@@ -9,6 +9,7 @@ POST /api/inbox/retry-all-failed?partner_code= — re-queue all failed jobs for 
 """
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 from typing import TYPE_CHECKING, Any
 
@@ -79,13 +80,16 @@ def list_inbox_partners(
 def list_inbox_messages(
     partner_code: str = Query(..., description="Partner code to filter by"),
     parse_status: str | None = Query(None),
+    search: str | None = Query(None, description="Match PO number or email subject"),
+    date_from: dt.date | None = Query(None, description="Received on/after this date (IST)"),
+    date_to: dt.date | None = Query(None, description="Received on/before this date (IST)"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_sync_db),
     _current_user: UserResponse = Depends(get_current_user),
 ) -> PaginatedResponse[InboxMessageItem]:
     """List raw messages for a specific platform, newest first."""
-    from sqlalchemy import func, select
+    from sqlalchemy import exists, func, select
 
     from app.models.edi_po import EdiPurchaseOrder
     from app.models.master_data import TradingPartner
@@ -102,6 +106,22 @@ def list_inbox_messages(
     )
     if parse_status:
         base_q = base_q.where(RawMessage.parse_status == parse_status)
+    if search:
+        pattern = f"%{search.strip()}%"
+        po_match = exists(
+            select(EdiPurchaseOrder.id).where(
+                EdiPurchaseOrder.raw_message_id == RawMessage.id,
+                EdiPurchaseOrder.buyer_po_number.ilike(pattern),
+            )
+        )
+        subject_match = RawMessage.headers["subject"].astext.ilike(pattern)
+        base_q = base_q.where(po_match | subject_match)
+    # Dates are compared in IST — the timezone the ops team sees in the UI.
+    ist_date = func.date(func.timezone("Asia/Kolkata", RawMessage.received_at))
+    if date_from:
+        base_q = base_q.where(ist_date >= date_from)
+    if date_to:
+        base_q = base_q.where(ist_date <= date_to)
 
     total = db.execute(
         select(func.count()).select_from(base_q.subquery())
