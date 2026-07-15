@@ -30,6 +30,7 @@ export interface POListItem {
   currency: string;
   line_count: number;
   b1_sales_order_doc_num: number | null;
+  received_at: string;
   created_at: string;
   updated_at: string;
 }

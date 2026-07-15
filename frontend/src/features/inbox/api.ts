@@ -61,13 +61,27 @@ export async function fetchInboxPartners(): Promise<InboxPartner[]> {
   return res.data;
 }
 
+export interface InboxMessageFilters {
+  search?: string;
+  date_from?: string; // yyyy-MM-dd
+  date_to?: string; // yyyy-MM-dd
+}
+
 export async function fetchInboxMessages(
   partner_code: string,
   offset = 0,
   limit = 50,
+  filters: InboxMessageFilters = {},
 ): Promise<PaginatedMessages> {
   const res = await apiClient.get<PaginatedMessages>("/api/inbox/messages", {
-    params: { partner_code, offset, limit },
+    params: {
+      partner_code,
+      offset,
+      limit,
+      search: filters.search || undefined,
+      date_from: filters.date_from || undefined,
+      date_to: filters.date_to || undefined,
+    },
   });
   return res.data;
 }

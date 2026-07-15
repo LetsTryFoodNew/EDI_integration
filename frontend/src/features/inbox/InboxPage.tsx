@@ -1,8 +1,10 @@
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Mail, Paperclip, CheckCircle2, Clock, AlertCircle, Inbox, RefreshCw } from "lucide-react";
+import { Mail, Paperclip, CheckCircle2, Clock, AlertCircle, Inbox, RefreshCw, Search, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -131,8 +133,33 @@ export default function InboxPage() {
   const selectedPartner = searchParams.get("partner") ?? "";
   const page = parseInt(searchParams.get("page") ?? "1", 10);
   const offset = (page - 1) * PAGE_SIZE;
+  const search = searchParams.get("q") ?? "";
+  const dateFrom = searchParams.get("from") ?? "";
+  const dateTo = searchParams.get("to") ?? "";
+  const [searchInput, setSearchInput] = useState(search);
   const queryClient = useQueryClient();
   const { toast } = useToast();
+
+  function updateParams(patch: Record<string, string>) {
+    const next = new URLSearchParams(searchParams);
+    for (const [key, value] of Object.entries(patch)) {
+      if (value) next.set(key, value);
+      else next.delete(key);
+    }
+    setSearchParams(next, { replace: true });
+  }
+
+  // Sync the input when the URL changes externally (e.g. partner switch clears it)
+  useEffect(() => setSearchInput(search), [search]);
+
+  // Debounce typing → URL param (which drives the query), reset to page 1
+  useEffect(() => {
+    const t = setTimeout(() => {
+      if (searchInput !== search) updateParams({ q: searchInput, page: "" });
+    }, 350);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchInput]);
 
   const retryAllMutation = useMutation({
     mutationFn: () => retryAllFailed(selectedPartner),
@@ -155,15 +182,23 @@ export default function InboxPage() {
   });
 
   const { data: messages, isLoading: loadingMessages } = useQuery({
-    queryKey: ["inbox", "messages", selectedPartner, page],
-    queryFn: () => fetchInboxMessages(selectedPartner, offset, PAGE_SIZE),
+    queryKey: ["inbox", "messages", selectedPartner, page, search, dateFrom, dateTo],
+    queryFn: () =>
+      fetchInboxMessages(selectedPartner, offset, PAGE_SIZE, {
+        search,
+        date_from: dateFrom,
+        date_to: dateTo,
+      }),
     enabled: !!selectedPartner,
     placeholderData: (prev) => prev,
   });
 
   function selectPartner(code: string) {
+    // Switching platform clears search/date filters and pagination
     setSearchParams({ partner: code }, { replace: true });
   }
+
+  const hasFilters = !!(search || dateFrom || dateTo);
 
   const totalPages = messages ? Math.ceil(messages.total / PAGE_SIZE) : 1;
 
@@ -210,15 +245,62 @@ export default function InboxPage() {
         ) : (
           <>
             {/* Header */}
-            <div className="px-4 py-3 border-b flex items-center justify-between shrink-0 gap-3">
-              <div>
+            <div className="px-4 py-3 border-b flex items-center justify-between shrink-0 gap-3 flex-wrap">
+              <div className="shrink-0">
                 <h2 className="font-semibold text-sm">
                   {(partners ?? []).find((p) => p.code === selectedPartner)?.name ?? selectedPartner}
                 </h2>
                 {messages && (
-                  <p className="text-xs text-muted-foreground">{messages.total} total emails</p>
+                  <p className="text-xs text-muted-foreground">
+                    {messages.total} {hasFilters ? "matching" : "total"} emails
+                  </p>
                 )}
               </div>
+
+              {/* Search + date range filters */}
+              <div className="flex items-center gap-2 flex-1 min-w-[260px] max-w-xl">
+                <div className="relative flex-1 min-w-[140px]">
+                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
+                  <Input
+                    value={searchInput}
+                    onChange={(e) => setSearchInput(e.target.value)}
+                    placeholder="Search PO number…"
+                    className="h-7 pl-8 text-xs"
+                  />
+                </div>
+                <Input
+                  type="date"
+                  value={dateFrom}
+                  max={dateTo || undefined}
+                  onChange={(e) => updateParams({ from: e.target.value, page: "" })}
+                  className="h-7 w-[8.75rem] text-xs shrink-0"
+                  aria-label="Received from date"
+                />
+                <span className="text-xs text-muted-foreground shrink-0">to</span>
+                <Input
+                  type="date"
+                  value={dateTo}
+                  min={dateFrom || undefined}
+                  onChange={(e) => updateParams({ to: e.target.value, page: "" })}
+                  className="h-7 w-[8.75rem] text-xs shrink-0"
+                  aria-label="Received to date"
+                />
+                {hasFilters && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 px-2 text-xs gap-1 shrink-0"
+                    onClick={() => {
+                      setSearchInput("");
+                      updateParams({ q: "", from: "", to: "", page: "" });
+                    }}
+                  >
+                    <X className="h-3 w-3" />
+                    Clear
+                  </Button>
+                )}
+              </div>
+
               <div className="flex items-center gap-2">
                 {/* Retry all failed */}
                 {(partners ?? []).find((p) => p.code === selectedPartner)?.failed ? (
@@ -238,7 +320,7 @@ export default function InboxPage() {
                   <div className="flex items-center gap-2 text-xs text-muted-foreground">
                     <button
                       disabled={page <= 1}
-                      onClick={() => setSearchParams({ partner: selectedPartner, page: String(page - 1) })}
+                      onClick={() => updateParams({ page: String(page - 1) })}
                       className="px-2 py-1 rounded border hover:bg-accent disabled:opacity-40"
                     >
                       ‹
@@ -246,7 +328,7 @@ export default function InboxPage() {
                     <span>{page} / {totalPages}</span>
                     <button
                       disabled={page >= totalPages}
-                      onClick={() => setSearchParams({ partner: selectedPartner, page: String(page + 1) })}
+                      onClick={() => updateParams({ page: String(page + 1) })}
                       className="px-2 py-1 rounded border hover:bg-accent disabled:opacity-40"
                     >
                       ›
@@ -267,7 +349,11 @@ export default function InboxPage() {
               ) : (messages?.items ?? []).length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground">
                   <Mail className="h-8 w-8 opacity-20" />
-                  <p className="text-sm">No emails found for this platform.</p>
+                  <p className="text-sm">
+                    {hasFilters
+                      ? "No emails match your search / date filter."
+                      : "No emails found for this platform."}
+                  </p>
                 </div>
               ) : (
                 <div>

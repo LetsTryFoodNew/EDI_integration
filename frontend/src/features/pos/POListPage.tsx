@@ -100,7 +100,7 @@ const columns = [
         <span className="text-muted-foreground text-sm">—</span>
       ),
   }),
-  col.accessor("created_at", {
+  col.accessor("received_at", {
     header: ({ column }) => (
       <Button
         variant="ghost"
@@ -121,7 +121,7 @@ const columns = [
 export default function POListPage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const [sorting, setSorting] = useState<SortingState>([{ id: "created_at", desc: true }]);
+  const [sorting, setSorting] = useState<SortingState>([{ id: "received_at", desc: true }]);
 
   const search = searchParams.get("search") ?? "";
   const partner = searchParams.get("partner") ?? "";
