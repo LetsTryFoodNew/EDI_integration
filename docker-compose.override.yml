@@ -1,0 +1,15 @@
+# Local-dev-only overrides — automatically merged by `docker compose` when this
+# file sits next to docker-compose.yml. NEVER deployed to the VPS: excluded by
+# name in the deploy workflow's rsync step (.github/workflows/deploy.yml).
+#
+# Restores host port access to postgres/redis for local tooling (psql, a GUI
+# client, `redis-cli`, running tests/integration/test_models.py against
+# localhost:5433) without exposing either port on the public VPS.
+services:
+  postgres:
+    ports:
+      - "5433:5432"
+
+  redis:
+    ports:
+      - "6379:6379"
