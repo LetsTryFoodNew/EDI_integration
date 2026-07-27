@@ -13,6 +13,10 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 COPY . .
+# Overridable so the same Dockerfile can serve from "/" or a reverse-proxied
+# subpath like "/edi-frontend/" — see docker-compose.yml's VITE_BASE_PATH.
+ARG VITE_BASE_PATH=/
+ENV VITE_BASE_PATH=$VITE_BASE_PATH
 RUN npm run build
 
 # ── Stage: production (nginx serves the built SPA) ───────────────────────────

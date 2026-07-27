@@ -13,25 +13,34 @@ import InboxDetailPage from "@/features/inbox/InboxDetailPage";
 import ApiInboxPage from "@/features/api-inbox/ApiInboxPage";
 import ApiInboxDetailPage from "@/features/api-inbox/ApiInboxDetailPage";
 
-export const router = createBrowserRouter([
-  { path: "/login", element: <LoginPage /> },
-  {
-    element: (
-      <ProtectedRoute>
-        <Shell />
-      </ProtectedRoute>
-    ),
-    children: [
-      { path: "/", element: <DashboardPage /> },
-      { path: "/inbox", element: <InboxPage /> },
-      { path: "/inbox/:messageId", element: <InboxDetailPage /> },
-      { path: "/api-inbox", element: <ApiInboxPage /> },
-      { path: "/api-inbox/:messageId", element: <ApiInboxDetailPage /> },
-      { path: "/pos", element: <POListPage /> },
-      { path: "/pos/:poId", element: <PODetailPage /> },
-      { path: "/exceptions", element: <ExceptionsPage /> },
-      { path: "/master-data", element: <MasterDataPage /> },
-      { path: "/b1-logs", element: <B1LogsPage /> },
-    ],
-  },
-]);
+// Vite's `base` (VITE_BASE_PATH at build time) drives this automatically, so
+// the router's mount path can never drift out of sync with the asset paths
+// baked into index.html — e.g. "/edi-frontend/" when reverse-proxied under a
+// subpath, "/" for local dev and bare-host deploys.
+const basename = import.meta.env.BASE_URL.replace(/\/$/, "") || "/";
+
+export const router = createBrowserRouter(
+  [
+    { path: "/login", element: <LoginPage /> },
+    {
+      element: (
+        <ProtectedRoute>
+          <Shell />
+        </ProtectedRoute>
+      ),
+      children: [
+        { path: "/", element: <DashboardPage /> },
+        { path: "/inbox", element: <InboxPage /> },
+        { path: "/inbox/:messageId", element: <InboxDetailPage /> },
+        { path: "/api-inbox", element: <ApiInboxPage /> },
+        { path: "/api-inbox/:messageId", element: <ApiInboxDetailPage /> },
+        { path: "/pos", element: <POListPage /> },
+        { path: "/pos/:poId", element: <PODetailPage /> },
+        { path: "/exceptions", element: <ExceptionsPage /> },
+        { path: "/master-data", element: <MasterDataPage /> },
+        { path: "/b1-logs", element: <B1LogsPage /> },
+      ],
+    },
+  ],
+  { basename },
+);

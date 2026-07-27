@@ -8,6 +8,11 @@ export const apiClient = axios.create({
   withCredentials: true,
 });
 
+// Same basename Vite bakes into index.html/router.tsx (e.g. "/edi-frontend"
+// when reverse-proxied under a subpath, "" for root deploys) — needed here
+// too since window.location.href needs a real path, not a router-relative one.
+const BASENAME = import.meta.env.BASE_URL.replace(/\/$/, "");
+
 // 401 → clear cached user and redirect to login (unless already there,
 // which would cause an infinite reload loop)
 apiClient.interceptors.response.use(
@@ -15,8 +20,9 @@ apiClient.interceptors.response.use(
   (error) => {
     if (error.response?.status === 401) {
       localStorage.removeItem("edi_user");
-      if (window.location.pathname !== "/login") {
-        window.location.href = "/login";
+      const loginPath = `${BASENAME}/login`;
+      if (window.location.pathname !== loginPath) {
+        window.location.href = loginPath;
       }
     }
     return Promise.reject(error);

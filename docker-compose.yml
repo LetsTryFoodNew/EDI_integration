@@ -144,6 +144,8 @@ services:
       context: frontend
       dockerfile: Dockerfile
       target: production
+      args:
+        VITE_BASE_PATH: ${VITE_BASE_PATH:-/}
     restart: unless-stopped
     ports:
       # Host-side port is overridable per-deploy (some hosts already have
