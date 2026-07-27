@@ -140,5 +140,7 @@ jobs:
 
       - name: Health check
         run: |
+          # Port 8000 is taken by another service on this VPS (see API_HOST_PORT
+          # in the BACKEND_ENV_FILE secret) — our api container is on 8001 here.
           ssh "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
-            "curl -fsS http://localhost:8000/health"
+            "curl -fsS http://localhost:8001/health"

@@ -39,7 +39,9 @@ services:
     volumes:
       - ./credentials:/app/credentials
     ports:
-      - "8000:8000"
+      # Host-side port is overridable per-deploy (some hosts already have
+      # something on 8000) — container always listens on 8000 internally.
+      - "${API_HOST_PORT:-8000}:8000"
     depends_on:
       postgres:
         condition: service_healthy
