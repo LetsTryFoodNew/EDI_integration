@@ -16,15 +16,16 @@ const mockUpdateSkuMapping = vi.mocked(api.updateSkuMapping);
 
 const unmappedSku: SkuMapping = {
   id: "sku-1",
+  trading_partner_id: "partner-1",
   partner_code: "BLINKIT",
   buyer_sku: "BL-SKU-9001",
-  buyer_sku_description: "Butter Chicken Paste 200g",
+  material_id: null,
   b1_item_code: null,
   qty_per_buyer_uom: null,
   mapping_status: "UNMAPPED",
   confidence_score: null,
+  notes: null,
   created_at: "2024-01-01T00:00:00Z",
-  updated_at: "2024-01-01T00:00:00Z",
 };
 
 const emptyList = <T,>(limit = 50): PaginatedResponse<T> => ({

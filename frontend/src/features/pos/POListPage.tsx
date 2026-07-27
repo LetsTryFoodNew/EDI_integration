@@ -185,7 +185,7 @@ export default function POListPage() {
           onChange={(e) => setParam("partner", e.target.value)}
           className="w-40"
         />
-        <Select value={status || "__all__"} onValueChange={(v) => setParam("status", v === "__all__" ? "" : v)}>
+        <Select value={status || "__all__"} onValueChange={(v) => setParam("status", v && v !== "__all__" ? v : "")}>
           <SelectTrigger className="w-44">
             <SelectValue placeholder="All statuses" />
           </SelectTrigger>

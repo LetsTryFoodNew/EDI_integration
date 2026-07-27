@@ -61,7 +61,7 @@ function EditPODialog({
     defaultValues: {
       buyer_po_number: po.buyer_po_number ?? "",
       buyer_po_date: po.issue_date ? po.issue_date.split("T")[0] : "",
-      buyer_name: po.buyer_name ?? "",
+      buyer_name: "",
       buyer_gstin: po.buyer_gstin ?? "",
       ship_to_name: po.ship_to_name ?? "",
       ship_to_code: po.ship_to_code ?? "",

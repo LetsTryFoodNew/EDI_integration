@@ -406,7 +406,7 @@ def _zepto_error_msg(body: str | bytes | Any) -> str:
     import json
     if isinstance(body, bytes):
         body = body.decode("utf-8", errors="replace")
-    if not isinstance(body, (str, dict)):
+    if not isinstance(body, str | dict):
         return str(body)
     if isinstance(body, str):
         try:
