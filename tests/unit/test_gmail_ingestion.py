@@ -1,7 +1,7 @@
 """
 Tests for Phase 2 email ingestion:
   - GmailClient MIME parsing (pure unit, no network)
-  - BlinkitEmailAdapter.is_po_email filter
+  - SwiggyEmailAdapter.is_po_email filter
   - ingest_label workflow (mocked Gmail + mocked DB)
 """
 from __future__ import annotations
@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.adapters.email.base import AttachmentMeta, InboundEmail
-from app.adapters.email.blinkit_email import BlinkitEmailAdapter
+from app.adapters.email.swiggy_email import SwiggyEmailAdapter
 from app.adapters.email.gmail_client import GmailClient
 
 # Import the workflow module so patch.object can reference it.
@@ -131,24 +131,41 @@ class TestGmailClientParsing:
         assert email.received_at.tzinfo is not None
 
 
-# ── BlinkitEmailAdapter.is_po_email ──────────────────────────────────────────
+# ── SwiggyEmailAdapter.is_po_email ───────────────────────────────────────────
 
-class TestBlinkitEmailAdapter:
+class TestSwiggyEmailAdapter:
     def setup_method(self):
-        self.adapter = BlinkitEmailAdapter()
+        self.adapter = SwiggyEmailAdapter()
 
-    def test_accepts_po_from_blinkit_domain(self):
-        email = _make_inbound_email(sender="orders@blinkit.com", subject="Weekly report")
+    def _pdf_attachment(self) -> AttachmentMeta:
+        return AttachmentMeta(
+            filename="order.pdf",
+            mime_type="application/pdf",
+            size_bytes=1024,
+            part_id="1",
+            attachment_id="att1",
+        )
+
+    def test_accepts_po_from_swiggy_domain_with_attachment(self):
+        email = _make_inbound_email(
+            sender="orders@swiggy.in", subject="Weekly report", attachments=[self._pdf_attachment()]
+        )
         assert self.adapter.is_po_email(email) is True
 
-    def test_accepts_po_from_grofers_legacy_domain(self):
-        email = _make_inbound_email(sender="no-reply@grofers.com", subject="Dispatch")
+    def test_accepts_po_from_scootsy_legacy_domain_with_attachment(self):
+        email = _make_inbound_email(
+            sender="no-reply@scootsy.com", subject="Dispatch", attachments=[self._pdf_attachment()]
+        )
         assert self.adapter.is_po_email(email) is True
+
+    def test_rejects_swiggy_domain_without_attachment(self):
+        email = _make_inbound_email(sender="orders@swiggy.in", subject="Weekly report")
+        assert self.adapter.is_po_email(email) is False
 
     def test_accepts_by_po_subject_keyword(self):
         email = _make_inbound_email(
             sender="unknown@example.com",
-            subject="Purchase Order #BL12345 for Let's Try Foods",
+            subject="Purchase Order #SWG12345 for Let's Try Foods",
         )
         assert self.adapter.is_po_email(email) is True
 
@@ -156,24 +173,21 @@ class TestBlinkitEmailAdapter:
         email = _make_inbound_email(sender="ops@somedomain.com", subject="PO #12345 approval")
         assert self.adapter.is_po_email(email) is True
 
-    def test_accepts_by_pdf_attachment(self):
-        att = AttachmentMeta(
-            filename="order.pdf",
-            mime_type="application/pdf",
-            size_bytes=1024,
-            part_id="1",
-            attachment_id="att1",
+    def test_rejects_skip_keyword_even_from_swiggy_domain(self):
+        email = _make_inbound_email(
+            sender="orders@swiggy.in",
+            subject="GRN confirmation for PO#SWG00123",
+            attachments=[self._pdf_attachment()],
         )
-        email = _make_inbound_email(sender="vendor@random.com", subject="Please review", attachments=[att])
-        assert self.adapter.is_po_email(email) is True
+        assert self.adapter.is_po_email(email) is False
 
     def test_rejects_newsletter_no_pdf_no_po_subject(self):
         email = _make_inbound_email(sender="newsletter@random.com", subject="Your weekly digest")
         assert self.adapter.is_po_email(email) is False
 
     def test_adapter_codes(self):
-        assert self.adapter.get_partner_code() == "BLINKIT"
-        assert self.adapter.get_gmail_label() == "BLINKIT_PO"
+        assert self.adapter.get_partner_code() == "SWIGGY"
+        assert self.adapter.get_gmail_label() == "SWIGGY_PO"
 
 
 # ── ingest_label workflow (mocked) ───────────────────────────────────────────
@@ -219,10 +233,12 @@ class TestIngestLabelWorkflow:
             patch.object(_wf, "SyncSessionLocal", return_value=session),
             patch.object(_wf, "GmailClient", return_value=gmail),
             patch.object(_wf, "settings") as mock_settings,
+            patch("app.adapters.storage.get_settings", return_value=mock_settings),
         ):
             mock_settings.gmail_credentials_path = "x"
             mock_settings.gmail_token_path = "y"
             mock_settings.attachment_base_path = str(tmp_path)
+            mock_settings.cloudinary_cloud_name = ""  # force local-disk storage, not Cloudinary
 
             result = _wf.ingest_label("BLINKIT", "BLINKIT_PO")
 
@@ -274,7 +290,10 @@ class TestIngestLabelWorkflow:
         assert "UNKNOWN_PARTNER" in result.errors[0]
 
     def test_non_po_email_is_filtered(self, tmp_path):
-        partner = self._make_partner()
+        # Uses SWIGGY (not BLINKIT): only partners with a registered email
+        # adapter actually run the is_po_email filter. Blinkit moved to the
+        # live API adapter and has no email adapter in the registry anymore.
+        partner = self._make_partner(code="SWIGGY")
         newsletter = _make_inbound_email(
             sender="newsletter@random.com",
             subject="Your weekly digest",
@@ -294,7 +313,7 @@ class TestIngestLabelWorkflow:
             mock_settings.gmail_token_path = "y"
             mock_settings.attachment_base_path = str(tmp_path)
 
-            result = _wf.ingest_label("BLINKIT", "BLINKIT_PO")
+            result = _wf.ingest_label("SWIGGY", "SWIGGY_PO")
 
         assert result.saved == 0
         assert result.skipped_filter == 1
@@ -322,10 +341,12 @@ class TestIngestLabelWorkflow:
             patch.object(_wf, "SyncSessionLocal", return_value=session),
             patch.object(_wf, "GmailClient", return_value=gmail),
             patch.object(_wf, "settings") as mock_settings,
+            patch("app.adapters.storage.get_settings", return_value=mock_settings),
         ):
             mock_settings.gmail_credentials_path = "x"
             mock_settings.gmail_token_path = "y"
             mock_settings.attachment_base_path = str(tmp_path)
+            mock_settings.cloudinary_cloud_name = ""  # force local-disk storage, not Cloudinary
 
             result = _wf.ingest_label("BLINKIT", "BLINKIT_PO")
 

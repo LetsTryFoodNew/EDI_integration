@@ -1,63 +1,73 @@
 {
-  "purchaseOrderNumber": "P365999",
-  "purchaseOrderDate": "2024-01-15T00:00:00Z",
-  "vendorCode": "V001",
+  "code": "P365999",
+  "orderDate": "2024-01-15T00:00:00Z",
+  "deliveryDate": "2024-01-20T00:00:00Z",
   "eventId": "evt_abc123def456",
-  "totalAmount": 51390.0,
+  "eventType": "CreatePO",
+  "vendorCode": "V001",
+  "vendorName": "Let's Try Foods Private Limited",
+  "toStoreName": "Zepto Dark Store - Andheri",
+  "toStoreCode": "MI042M",
+  "status": "RELEASED",
+  "isInterstate": false,
   "expiringUrlForPoPDF": "https://example.zepto.in/po/pdf?token=abc123",
-  "buyerDetails": {
-    "gstin": "27AABCT1234M1Z5",
-    "name": "Zepto Dark Store - Andheri",
-    "address": "Unit 9, Marol Industrial Estate, Mumbai 400093"
+  "address": {
+    "storeShippingAddress": "Unit 9, Marol Industrial Estate, Mumbai 400093",
+    "storeBillingAddress": "Unit 9, Marol Industrial Estate, Mumbai 400093",
+    "vendorAddress": "Let's Try Foods Private Limited, Factory Road, Pune 411001"
   },
-  "lineItems": [
+  "financialDetails": {
+    "entityGSTIN": "27AABCT1234M1Z5",
+    "vendorGSTIN": "27AAFCD5862R013",
+    "entityPAN": "AABCT1234M",
+    "vendorPAN": "AAFCD5862R"
+  },
+  "poLineItems": [
     {
       "lineNumber": 1,
-      "productIdentifier": {
-        "buyerProductIdentifier": {
-          "skuCode": "Z-SKU-001",
-          "productName": "Peri Peri Makhana 80g"
-        }
-      },
-      "quantity": {
-        "orderedQuantity": {
-          "amount": 100,
-          "unit": "PC"
-        }
-      },
-      "pricing": {
-        "unitPrice": 90.0
-      },
-      "taxDetails": {
-        "hsnCode": "20089900",
-        "cgstRate": 6.0,
-        "sgstRate": 6.0,
-        "igstRate": 0.0
-      }
+      "skuCode": "007ec75c-int-uuid-1",
+      "materialCode": "Z-SKU-001",
+      "ean": "8901234567890",
+      "productName": "Peri Peri Makhana 80g",
+      "brandName": "Let's Try",
+      "hsnCode": "20089900",
+      "quantity": 100,
+      "packSize": 1,
+      "costPrice": 90.0,
+      "mrp": 120.0,
+      "totalAmount": 10080.0,
+      "cgstValue": 540.0,
+      "sgstValue": 540.0,
+      "igstValue": 0,
+      "cgstPercentage": 6.0,
+      "sgstPercentage": 6.0,
+      "igstPercentage": 0,
+      "cessValue": 0,
+      "margin": 25,
+      "taxExclusiveCost": 90.0
     },
     {
       "lineNumber": 2,
-      "productIdentifier": {
-        "buyerProductIdentifier": {
-          "skuCode": "Z-SKU-002",
-          "productName": "Himalayan Soya Chunks 100g"
-        }
-      },
-      "quantity": {
-        "orderedQuantity": {
-          "amount": 150,
-          "unit": "PC"
-        }
-      },
-      "pricing": {
-        "unitPrice": 45.0
-      },
-      "taxDetails": {
-        "hsnCode": "21031000",
-        "cgstRate": 6.0,
-        "sgstRate": 6.0,
-        "igstRate": 0.0
-      }
+      "skuCode": "007ec75c-int-uuid-2",
+      "materialCode": "Z-SKU-002",
+      "ean": "8901234567891",
+      "productName": "Himalayan Soya Chunks 100g",
+      "brandName": "Let's Try",
+      "hsnCode": "21031000",
+      "quantity": 150,
+      "packSize": 1,
+      "costPrice": 45.0,
+      "mrp": 60.0,
+      "totalAmount": 7560.0,
+      "cgstValue": 405.0,
+      "sgstValue": 405.0,
+      "igstValue": 0,
+      "cgstPercentage": 6.0,
+      "sgstPercentage": 6.0,
+      "igstPercentage": 0,
+      "cessValue": 0,
+      "margin": 25,
+      "taxExclusiveCost": 45.0
     }
   ]
 }

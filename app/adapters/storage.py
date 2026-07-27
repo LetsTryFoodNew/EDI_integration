@@ -125,7 +125,7 @@ def _save_local(
     log.debug("storage.saved_local", path=str(dest))
     return {
         "filename": filename,
-        "url": dest.as_uri(),
+        "url": dest.resolve().as_uri(),
         "public_id": str(dest),
         "mime_type": mime_type,
         "size_bytes": len(data),

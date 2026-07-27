@@ -182,7 +182,7 @@ class TestZeptoParser:
         assert self.parser.can_parse(_raw({}, "ZEPTO")) is False
 
     def test_cannot_parse_missing_line_items_key(self) -> None:
-        payload = {"purchaseOrderNumber": "P001"}
+        payload = {"code": "P001"}
         assert self.parser.can_parse(_raw(payload, "ZEPTO")) is False
 
     def test_happy_path(self) -> None:
@@ -211,16 +211,17 @@ class TestZeptoParser:
 
     def test_missing_po_number(self) -> None:
         payload = self._load("zepto_po_event.json")
-        del payload["purchaseOrderNumber"]
+        del payload["code"]
         result = self.parser.parse(_raw(payload, "ZEPTO"))
 
         assert result.success is False
-        assert any("purchaseOrderNumber" in e for e in result.errors)
+        assert any("code" in e for e in result.errors)
 
     def test_missing_buyer_sku_in_line(self) -> None:
         payload = self._load("zepto_po_event.json")
-        # Remove the buyerProductIdentifier from first line
-        del payload["lineItems"][0]["productIdentifier"]["buyerProductIdentifier"]["skuCode"]
+        # Remove both buyer-sku fallbacks (materialCode, skuCode) from first line
+        del payload["poLineItems"][0]["materialCode"]
+        del payload["poLineItems"][0]["skuCode"]
         result = self.parser.parse(_raw(payload, "ZEPTO"))
 
         # Second line should still parse; first goes to warnings
@@ -230,7 +231,7 @@ class TestZeptoParser:
 
     def test_zero_ordered_qty_skipped(self) -> None:
         payload = self._load("zepto_po_event.json")
-        payload["lineItems"][0]["quantity"]["orderedQuantity"]["amount"] = 0
+        payload["poLineItems"][0]["quantity"] = 0
         result = self.parser.parse(_raw(payload, "ZEPTO"))
 
         assert result.success is True
@@ -244,17 +245,19 @@ class TestZeptoParser:
         from datetime import date
         assert result.doc.buyer_po_date == date(2024, 1, 15)
 
-    def test_total_amount_from_header(self) -> None:
+    def test_grand_total_is_sum_of_line_totals(self) -> None:
+        # Zepto's PO payload has no order-level total field — grand_total is
+        # always computed by summing each line's taxable + tax amounts.
         payload = self._load("zepto_po_event.json")
-        payload["totalAmount"] = 99999.0
         result = self.parser.parse(_raw(payload, "ZEPTO"))
 
         assert result.success is True
-        assert result.doc.grand_total == Decimal("99999.00")
+        # Line 1: 10080.00, Line 2: 7560.00
+        assert result.doc.grand_total == Decimal("17640.00")
 
     def test_empty_line_items_fails(self) -> None:
         payload = self._load("zepto_po_event.json")
-        payload["lineItems"] = []
+        payload["poLineItems"] = []
         result = self.parser.parse(_raw(payload, "ZEPTO"))
 
         assert result.success is False
@@ -273,9 +276,7 @@ class TestZeptoParser:
         assert doc.line_items[0].line_total == Decimal("10080.00")
         assert doc.line_items[1].line_total == Decimal("7560.00")
 
-        # Grand total comes from header (51390.0) not computed — check header used
-        assert doc.grand_total == Decimal("51390.00")
-        # Subtotal computed from lines regardless
+        assert doc.grand_total == Decimal("17640.00")  # 10080 + 7560
         assert doc.subtotal_amount == Decimal("15750.00")  # 9000 + 6750
 
 

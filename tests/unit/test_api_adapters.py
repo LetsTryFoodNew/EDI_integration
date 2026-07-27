@@ -28,7 +28,7 @@ class TestZeptoApiAdapter:
         self.adapter = ZeptoApiAdapter()
         self.adapter._client_id = "test-client-id"
         self.adapter._client_secret = "test-client-secret"
-        self.adapter._base_url = "https://silkroute.test.zepto"
+        self.adapter._zepto_base = "https://silkroute.test.zepto"
 
     def _events_url(self) -> str:
         return "https://silkroute.test.zepto/api/v1/external/po/events"
