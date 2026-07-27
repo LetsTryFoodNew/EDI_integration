@@ -2,6 +2,7 @@ import { NavLink } from "react-router-dom";
 import {
   LayoutDashboard,
   Inbox,
+  Zap,
   ShoppingCart,
   AlertTriangle,
   Database,
@@ -13,6 +14,7 @@ import { cn } from "@/lib/utils";
 const NAV_ITEMS = [
   { to: "/",             label: "Dashboard",       icon: LayoutDashboard },
   { to: "/inbox",        label: "Email Inbox",     icon: Inbox },
+  { to: "/api-inbox",    label: "API Inbox",       icon: Zap },
   { to: "/pos",          label: "Purchase Orders", icon: ShoppingCart },
   { to: "/exceptions",   label: "Exceptions",      icon: AlertTriangle },
   { to: "/master-data",  label: "Master Data",     icon: Database },

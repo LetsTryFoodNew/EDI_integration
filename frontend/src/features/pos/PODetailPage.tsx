@@ -379,17 +379,23 @@ function RawSourceTab({ po }: { po: PODetail }) {
   if (!po.raw_message_id)
     return <p className="text-sm text-muted-foreground py-4">No raw source attached.</p>;
 
+  const isApiSource = po.source_channel === "API" || po.source_channel === "WEBHOOK";
+  const sourceHref = isApiSource
+    ? `/api-inbox/${po.raw_message_id}`
+    : `/inbox/${po.raw_message_id}`;
+  const sourceLabel = isApiSource ? "View API payload" : "View source email & attachments";
+
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2">
         <span className="text-sm text-muted-foreground">Message ID:</span>
         <span className="font-mono text-xs">{po.raw_message_id}</span>
         <a
-          href={`/inbox/${po.raw_message_id}`}
+          href={sourceHref}
           className="inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-sm hover:bg-accent transition-colors"
         >
           <ExternalLink className="h-3 w-3" />
-          View source email &amp; attachments
+          {sourceLabel}
         </a>
       </div>
     </div>

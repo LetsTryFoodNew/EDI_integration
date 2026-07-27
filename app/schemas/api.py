@@ -367,6 +367,45 @@ class InboxMessageDetail(BaseModel):
     created_at: datetime
 
 
+# ── API Inbox (API/webhook raw messages) ──────────────────────────────────────
+
+class ApiPartnerSummary(BaseModel):
+    code: str
+    name: str
+    source_channel: str
+    total: int
+    pending: int
+    failed: int
+    last_received_at: datetime | None
+
+
+class ApiPartnerStatus(BaseModel):
+    code: str
+    name: str
+    source_channel: str
+    last_fetched_at: datetime | None        # watermark from api_config (poll partners only)
+    last_message_at: datetime | None        # most recent raw_message.received_at
+    messages_last_24h: int
+    failed_last_24h: int
+    webhook_url: str | None                 # e.g. /api/webhooks/BLINKIT (webhook partners only)
+    is_configured: bool                     # True if credentials are present in settings
+
+
+class ApiMessageDetail(BaseModel):
+    id: uuid.UUID
+    partner_code: str
+    partner_name: str
+    external_id: str
+    received_at: datetime
+    payload: dict | None
+    parse_status: str
+    processed: bool
+    po_id: uuid.UUID | None
+    po_number: str | None
+    po_status: str | None
+    created_at: datetime
+
+
 # ── B1 Logs ────────────────────────────────────────────────────────────────────
 
 class B1LogListItem(BaseModel):

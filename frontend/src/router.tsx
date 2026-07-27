@@ -10,6 +10,8 @@ import MasterDataPage from "@/features/master-data/MasterDataPage";
 import B1LogsPage from "@/features/b1-logs/B1LogsPage";
 import InboxPage from "@/features/inbox/InboxPage";
 import InboxDetailPage from "@/features/inbox/InboxDetailPage";
+import ApiInboxPage from "@/features/api-inbox/ApiInboxPage";
+import ApiInboxDetailPage from "@/features/api-inbox/ApiInboxDetailPage";
 
 export const router = createBrowserRouter([
   { path: "/login", element: <LoginPage /> },
@@ -23,6 +25,8 @@ export const router = createBrowserRouter([
       { path: "/", element: <DashboardPage /> },
       { path: "/inbox", element: <InboxPage /> },
       { path: "/inbox/:messageId", element: <InboxDetailPage /> },
+      { path: "/api-inbox", element: <ApiInboxPage /> },
+      { path: "/api-inbox/:messageId", element: <ApiInboxDetailPage /> },
       { path: "/pos", element: <POListPage /> },
       { path: "/pos/:poId", element: <PODetailPage /> },
       { path: "/exceptions", element: <ExceptionsPage /> },

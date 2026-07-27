@@ -68,7 +68,6 @@ dev = [
     "pre-commit==4.0.1",
     # mypy stubs
     "types-redis==4.6.0.20241004",
-    "types-bcrypt==4.0.0.20240106",
 ]
 
 [tool.ruff]

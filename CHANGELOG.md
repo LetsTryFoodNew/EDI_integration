@@ -1,5 +1,42 @@
 # Changelog
 
+## Phase 0 — CI/CD Deploy Fixes (2026-07-27)
+- `pyproject.toml` — removed `types-bcrypt==4.0.0.20240106` dev dependency; the package doesn't exist on PyPI and was breaking `pip install -e ".[dev]"` in CI. `bcrypt` ships its own inline types, so no stub package is needed.
+- `docker-compose.yml` — removed public port mappings on `postgres` (`5433:5432`) and `redis` (`6379:6379`); both are only reached by other containers over the internal Docker network and had no reason to be exposed on the VPS host.
+- Untracked all `__pycache__/`/`*.pyc` files (already covered by `.gitignore` but committed before the rule existed).
+
+## Phase 4 — Zepto + Blinkit Live Integration (2026-07-17)
+- `GET /api/api-inbox/status` — per-partner connection health: last_fetched_at (watermark), last_message_at, 24h message/failure counts, `is_configured` flag (checks env credentials), webhook URL for BLINKIT
+- `POST /api/api-inbox/trigger-fetch?partner_code=ZEPTO` — manually enqueue an immediate Zepto poll without waiting for the 5-minute scheduler cycle; returns RQ job_id; returns 400 for WEBHOOK-only partners
+- `ApiPartnerStatus` schema added to `app/schemas/api.py`
+- `frontend/src/features/api-inbox/api.ts` — added `fetchApiPartnerStatus()` and `triggerFetch()` calls
+- `ApiInboxPage.tsx` — added `ConnectionStatusPanel` at top showing per-partner: online/offline icon (green Wifi vs red WifiOff), push vs poll badge, last fetch time, 24h event count, "Fetch Now" button (disabled if credentials missing or already queued); panel auto-refreshes every 60s via TanStack Query
+
+## Phase 4 — Zepto API Inbox (2026-07-17)
+- `app/api/routes/api_inbox.py` — new router at `/api/api-inbox/*` for API/webhook-based partners:
+  - `GET /api/api-inbox/partners` — active partners with source_channel in ('API', 'WEBHOOK') plus per-partner message counts
+  - `GET /api/api-inbox/messages` — paginated raw messages; search by PO number or external_id; date filters in IST
+  - `GET /api/api-inbox/messages/{id}` — detail with full `payload` JSON field (Zepto's raw PO event dict)
+  - `POST /api/api-inbox/messages/{id}/retry-parse` — re-queue failed parse jobs
+- `app/schemas/api.py` — added `ApiPartnerSummary` and `ApiMessageDetail` schemas
+- `app/main.py` — registered `api_inbox_router`
+- `frontend/src/features/api-inbox/api.ts` — typed API client for `/api/api-inbox/*` endpoints
+- `frontend/src/features/api-inbox/ApiInboxPage.tsx` — two-panel layout (platform list + event list with eventId, PO number, parse status, date filters, pagination); mirrors InboxPage pattern
+- `frontend/src/features/api-inbox/ApiInboxDetailPage.tsx` — detail view: metadata card, linked PO card, raw JSON payload viewer (formatted `<pre>`)
+- `frontend/src/router.tsx` — added `/api-inbox` and `/api-inbox/:messageId` routes
+- `frontend/src/components/layout/Sidebar.tsx` — added "API Inbox" nav item with Zap icon
+- Re-implemented Zepto adapter based on `_archive/backend_old/app/services/zepto.py`
+
+## Phase 8 — Vitest Tests (2026-07-17)
+- Installed `vitest`, `@testing-library/react`, `@testing-library/user-event`, `@testing-library/jest-dom`, `jsdom` as dev dependencies
+- Added `"test": "vitest run"` and `"typecheck": "tsc --noEmit"` scripts to `frontend/package.json`
+- Configured Vitest in `vite.config.ts` (jsdom environment, globals, setup file, thread pool)
+- Created `src/test/setup.ts` (jest-dom matchers) and `src/test/utils.tsx` (test wrapper with `QueryClientProvider` + `MemoryRouter`)
+- 11 tests across 3 files, all passing:
+  - `POListPage.test.tsx` — renders rows, loading state, URL-synced `po_status` filter, empty state
+  - `SkuMappingsTab.test.tsx` — renders unmapped SKU, shows inline edit inputs, calls `updateSkuMapping` with correct args
+  - `ExceptionsPage.test.tsx` — renders grouped exceptions, opens resolve dialog, calls `resolveException` + re-fetches list, empty state
+
 ## Phase 8.1 — Inbox Search/Date Filters + PO Received-At (2026-07-15)
 - `GET /api/inbox/messages` — added `search` (matches PO number or email subject via JSONB `headers.subject`), `date_from`, and `date_to` query params; dates compared in IST timezone
 - `InboxPage.tsx` — search box (350ms debounce → URL param), date-range pickers, "Clear" button; filter state URL-synced so page is bookmarkable; pagination preserved across filter changes; empty state distinguishes filtered vs unfiltered

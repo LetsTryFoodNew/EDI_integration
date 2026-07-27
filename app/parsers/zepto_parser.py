@@ -5,49 +5,66 @@ Source format: one purchaseOrder object from Zepto Silk Route API
   GET /api/v1/external/po/events → data.purchaseOrders[]
   The Phase 4 adapter stores each PO individually in raw_messages.payload.
 
-Payload structure (inferred from _archive/backend_old/app/services/zepto.py
-and the ASN payload contract):
+Actual payload structure (verified from live QA API 2026-07-17):
   {
-    "purchaseOrderNumber": "P365999",
-    "purchaseOrderDate":   "2024-01-15T00:00:00Z",
-    "vendorCode":          "V001",
-    "eventId":             "evt_abc123",
-    "totalAmount":         50000.00,
-    "buyerDetails": {
-      "gstin":   "27XXXXXXXXX",
-      "name":    "Zepto Dark Store",
-      "address": "Flat 101, ..."
+    "code":         "P368265",        ← PO number
+    "orderDate":    "2026-07-16T10:15:23Z",
+    "deliveryDate": "2026-08-09T18:30:00Z",
+    "eventId":      "7e1eba2b-...",
+    "eventType":    "CreatePO",
+    "vendorCode":   "KKT-45129",
+    "vendorName":   "...",
+    "toStoreName":  "TEST-MUM-FARUKHNAGR",
+    "toStoreCode":  "MI042M",
+    "status":       "RELEASED",
+    "isInterstate": true,
+    "address": {
+      "storeShippingAddress": "...",
+      "storeBillingAddress":  "...",
+      "vendorAddress":        "..."
     },
-    "lineItems": [
+    "financialDetails": {
+      "entityGSTIN": "27AAFCD5862R013",   ← buyer GSTIN
+      "vendorGSTIN": "27AAFCD5862R013",   ← our GSTIN
+      "entityPAN":   "...",
+      "vendorPAN":   "..."
+    },
+    "poLineItems": [
       {
-        "lineNumber": 1,
-        "productIdentifier": {
-          "buyerProductIdentifier": {
-            "skuCode":     "Z-SKU-001",
-            "productName": "Peri Peri Makhana 80g"
-          }
-        },
-        "quantity": {
-          "orderedQuantity": { "amount": 50, "unit": "PC" }
-        },
-        "pricing": {
-          "unitPrice": 90.00
-        },
-        "taxDetails": {
-          "hsnCode":  "20089900",
-          "cgstRate": 6.0,
-          "sgstRate": 6.0,
-          "igstRate": 0.0
-        }
+        "skuCode":       "007ec75c-...",   ← buyer's UUID for the item
+        "materialCode":  "2223",           ← buyer's material code (use as buyer_sku)
+        "ean":           "B1234",
+        "productName":   "Fortune Soyabean Oil - 120g",
+        "brandName":     "...",
+        "hsnCode":       "96190030",
+        "quantity":      5,
+        "packSize":      1,
+        "costPrice":     91,               ← per-unit cost (tax-exclusive)
+        "mrp":           130,
+        "totalAmount":   455,              ← quantity * costPrice (incl tax)
+        "cgstValue":     0,
+        "sgstValue":     0,
+        "igstValue":     9.75,
+        "cgstPercentage": 0,
+        "sgstPercentage": 0,
+        "igstPercentage": 12,
+        "cessValue":     0,
+        "margin":        30,
+        "taxExclusiveCost": 81.25
       }
-    ]
+    ],
+    "expiringUrlForPoPDF": "https://..."  ← PDF URL, valid ~7 days
   }
 
-Known quirks (from Zepto API contract v12, cross-referenced with archive):
+Known quirks:
   - All timestamps are UTC ISO-8601
-  - Quantities must be in pieces (PC); case-size conversion is our responsibility
-  - eventId should be used as idempotency key (stored in raw_message.external_id)
-  - PO PDF URL is in expiringUrlForPoPDF — valid for ~7 days
+  - Line items key is `poLineItems` (not `lineItems`)
+  - PO number is in `code` (not `purchaseOrderNumber`)
+  - eventId is stored as raw_message.external_id (idempotency key)
+  - `materialCode` is the buyer's EAN/material ref — use as buyer_sku
+  - `skuCode` is Zepto's internal UUID — store separately if needed
+  - `costPrice` is the per-unit cost Zepto pays (matches taxExclusiveCost * qty roughly)
+  - taxExclusiveCost is the per-unit pre-tax price we should use for unit_price
   - Rate limit: 60 RPM per clientId
 """
 from __future__ import annotations
@@ -77,8 +94,9 @@ class ZeptoParser(BaseParser):
         return "ZEPTO"
 
     def can_parse(self, raw_message: Any) -> bool:
+        # Zepto payloads use "code" as the PO number and "poLineItems" for lines
         p = raw_message.payload or {}
-        return bool(p.get("purchaseOrderNumber") and "lineItems" in p)
+        return bool(p.get("code") and "poLineItems" in p)
 
     def parse(self, raw_message: Any) -> ParseResult:
         try:
@@ -94,21 +112,24 @@ class ZeptoParser(BaseParser):
     # ── Internal ──────────────────────────────────────────────────────────────
 
     def _do_parse(self, payload: dict[str, Any], raw_message: Any) -> ParseResult:
-        po_number: str | None = payload.get("purchaseOrderNumber")
+        # Actual Zepto field: "code" (not "purchaseOrderNumber")
+        po_number: str | None = payload.get("code")
         if not po_number:
             return ParseResult(
-                success=False, errors=["Missing purchaseOrderNumber"], parser_name="ZeptoParser"
+                success=False, errors=["Missing 'code' (PO number)"], parser_name="ZeptoParser"
             )
 
-        buyer: dict[str, Any] = payload.get("buyerDetails") or {}
+        fin: dict[str, Any] = payload.get("financialDetails") or {}
+        addr: dict[str, Any] = payload.get("address") or {}
 
         ship_to = EDIAddress(
-            name=buyer.get("name"),
-            line1=buyer.get("address"),
-            gstin=buyer.get("gstin"),
+            name=payload.get("toStoreName"),
+            line1=addr.get("storeShippingAddress"),
+            gstin=fin.get("entityGSTIN"),
         )
 
-        lines, line_errors = self._parse_lines(payload.get("lineItems") or [])
+        # Actual Zepto field: "poLineItems" (not "lineItems")
+        lines, line_errors = self._parse_lines(payload.get("poLineItems") or [])
         if not lines:
             return ParseResult(
                 success=False,
@@ -121,8 +142,7 @@ class ZeptoParser(BaseParser):
         igst_total = _sum_decimal(li.igst_amount for li in lines)
         subtotal = _sum_decimal(li.taxable_amount for li in lines)
 
-        header_total = _to_decimal(payload.get("totalAmount"))
-        grand_total = header_total if header_total else (subtotal + cgst_total + sgst_total + igst_total)
+        grand_total = subtotal + cgst_total + sgst_total + igst_total
 
         doc = EDI850(
             id=uuid.uuid4(),
@@ -131,10 +151,10 @@ class ZeptoParser(BaseParser):
             source_channel=SourceChannel.API,
             raw_message_id=getattr(raw_message, "id", None),
             buyer_po_number=po_number,
-            buyer_po_date=_parse_date(payload.get("purchaseOrderDate")),
+            buyer_po_date=_parse_date(payload.get("orderDate")),
             ship_to=ship_to,
-            buyer_gstin=buyer.get("gstin"),
-            buyer_name=buyer.get("name"),
+            buyer_gstin=fin.get("entityGSTIN"),
+            buyer_name=payload.get("toStoreName") or payload.get("entityName"),
             subtotal_amount=subtotal,
             cgst_amount=cgst_total or None,
             sgst_amount=sgst_total or None,
@@ -156,16 +176,12 @@ class ZeptoParser(BaseParser):
     ) -> tuple[list[EDI850Line], list[str]]:
         lines: list[EDI850Line] = []
         errors: list[str] = []
-        for item in items:
-            line_no = item.get("lineNumber", len(lines) + 1)
+        for idx, item in enumerate(items):
+            line_no = idx + 1
             try:
                 lines.append(_zepto_item_to_line(item, line_no))
             except Exception as exc:
-                sku = (
-                    item.get("productIdentifier", {})
-                    .get("buyerProductIdentifier", {})
-                    .get("skuCode", "?")
-                )
+                sku = item.get("materialCode") or item.get("skuCode") or "?"
                 errors.append(f"Line {line_no} (sku={sku}): {exc}")
         return lines, errors
 
@@ -173,39 +189,45 @@ class ZeptoParser(BaseParser):
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _zepto_item_to_line(item: dict[str, Any], line_number: int) -> EDI850Line:
-    buyer_id = item.get("productIdentifier") or {}
-    buyer_sku_info = (buyer_id.get("buyerProductIdentifier") or {})
-    buyer_sku = buyer_sku_info.get("skuCode") or ""
+    # buyer_sku: prefer materialCode (Zepto's buyer-side EAN/code); fall back to skuCode
+    buyer_sku = item.get("materialCode") or item.get("skuCode") or ""
     if not buyer_sku:
-        raise ValueError("lineItem has no buyerProductIdentifier.skuCode")
+        raise ValueError("poLineItem has no materialCode or skuCode")
 
-    qty_block = (item.get("quantity") or {}).get("orderedQuantity") or {}
-    qty = _to_decimal(qty_block.get("amount"))
+    qty = _to_decimal(item.get("quantity"))
     if qty <= _ZERO:
-        raise ValueError(f"orderedQuantity.amount must be > 0, got {qty}")
+        raise ValueError(f"quantity must be > 0, got {qty}")
 
-    pricing = item.get("pricing") or {}
-    unit_price = _to_decimal(pricing.get("unitPrice"))
+    # taxExclusiveCost is the per-unit pre-tax cost price Zepto pays us
+    unit_price = _to_decimal(item.get("taxExclusiveCost") or item.get("costPrice"))
     taxable = (qty * unit_price).quantize(_TWO_DP, ROUND_HALF_UP)
 
-    tax = item.get("taxDetails") or {}
-    cgst_rate = _to_decimal(tax.get("cgstRate"))
-    sgst_rate = _to_decimal(tax.get("sgstRate"))
-    igst_rate = _to_decimal(tax.get("igstRate"))
+    cgst_rate = _to_decimal(item.get("cgstPercentage"))
+    sgst_rate = _to_decimal(item.get("sgstPercentage"))
+    igst_rate = _to_decimal(item.get("igstPercentage"))
 
-    cgst_amt = (taxable * cgst_rate / 100).quantize(_TWO_DP, ROUND_HALF_UP) if cgst_rate else None
-    sgst_amt = (taxable * sgst_rate / 100).quantize(_TWO_DP, ROUND_HALF_UP) if sgst_rate else None
-    igst_amt = (taxable * igst_rate / 100).quantize(_TWO_DP, ROUND_HALF_UP) if igst_rate else None
+    # Zepto sends pre-computed tax values — use them directly for accuracy
+    cgst_amt = _to_decimal(item.get("cgstValue")) or None
+    sgst_amt = _to_decimal(item.get("sgstValue")) or None
+    igst_amt = _to_decimal(item.get("igstValue")) or None
+
+    # Recalculate if pre-computed values are zero but rate is set (data quality guard)
+    if cgst_rate and not cgst_amt:
+        cgst_amt = (taxable * cgst_rate / 100).quantize(_TWO_DP, ROUND_HALF_UP) or None
+    if sgst_rate and not sgst_amt:
+        sgst_amt = (taxable * sgst_rate / 100).quantize(_TWO_DP, ROUND_HALF_UP) or None
+    if igst_rate and not igst_amt:
+        igst_amt = (taxable * igst_rate / 100).quantize(_TWO_DP, ROUND_HALF_UP) or None
 
     line_total = taxable + (cgst_amt or _ZERO) + (sgst_amt or _ZERO) + (igst_amt or _ZERO)
 
     return EDI850Line(
         line_number=line_number,
         buyer_sku=buyer_sku,
-        buyer_sku_description=buyer_sku_info.get("productName"),
-        hsn_code=tax.get("hsnCode"),
+        buyer_sku_description=item.get("productName"),
+        hsn_code=item.get("hsnCode"),
         ordered_qty=qty,
-        buyer_uom=qty_block.get("unit", "PC"),
+        buyer_uom="PC",
         unit_price=unit_price,
         taxable_amount=taxable,
         cgst_rate=cgst_rate or None,

@@ -6,15 +6,33 @@ Auth:          X-Client-Id + X-Client-Secret headers (NOT Bearer token)
 QA host:       https://silkroute.zeptonow.dev
 Prod host:     https://silkroute.zepto.co.in
 
-Key rules from API contract v12 (cross-referenced with _archive/backend_old/app/services/zepto.py):
+Routing (re-implemented from _archive/backend_old/app/services/zepto.py):
+  LOCAL       → Mac → Render proxy (whitelisted static IP) → Zepto QA
+                URL: {RENDER_URL}/api/proxy/zepto/{path}
+  STAGING     → Render proxy → Zepto QA  (same proxy, different env label)
+  PRODUCTION  → Direct to silkroute.zepto.co.in
+
+Why proxy?  Zepto whitelists specific IPs. Local/dev machines have dynamic IPs
+that Zepto blocks.  The Render.com deployment at po-integration-backend.onrender.com
+has static IPs already whitelisted by Zepto.
+
+Proxy response envelope (HTTP 200 even when Zepto returns 4xx):
+  {
+    "proxied":     true,
+    "status_code": <real Zepto HTTP status>,
+    "data":        <full Zepto response body>
+  }
+  The inner Zepto body is itself: {"data": {"purchaseOrders": [...], "hasNext": bool}}
+  So via proxy: raw["data"]["data"]["purchaseOrders"]
+  Direct:       raw["data"]["purchaseOrders"]
+
+Key rules from API contract v12:
   - Rate limit: 60 RPM per clientId
   - Max days=45, max pageSize=20
-  - Use eventId as the idempotency key — stored as raw_message.external_id
+  - eventId is the idempotency key — stored as raw_message.external_id
   - All timestamps are UTC
-  - Quantities in pieces (PC) — case-size conversion is our job
+  - Quantities in pieces (PC) — case-size conversion is our responsibility
   - No Retry-After header on 429 — use fixed backoff
-
-Re-implemented from _archive/backend_old/app/services/zepto.py
 """
 from __future__ import annotations
 
@@ -43,13 +61,17 @@ class ZeptoApiAdapter(BaseApiAdapter):
     """
     Polls Zepto for new PO events. Called synchronously by the RQ ingest worker.
 
+    Routing:
+      environment == "production"  → direct to silkroute.zepto.co.in
+      everything else              → via Render proxy (uses whitelisted static IP)
+
     Watermark tracking:
       TradingPartner.api_config["last_fetched_at"] (ISO-8601 UTC string)
       Updated after a successful full page sweep.
 
     Pagination:
-      Zepto's API returns pages; we iterate until data.hasNext == false or
-      we hit max_pages. This protects against infinite loops on large backlogs.
+      Zepto returns pages; we iterate until data.hasNext == false or
+      we hit max_pages (protects against infinite loops on large backlogs).
     """
 
     @property
@@ -60,9 +82,41 @@ class ZeptoApiAdapter(BaseApiAdapter):
         s = get_settings()
         self._client_id = s.zepto_client_id
         self._client_secret = s.zepto_client_secret
-        default_base = _QA_BASE if s.environment != "production" else _PROD_BASE
-        self._base_url = (s.zepto_base_url or default_base).rstrip("/")
+        self._render_url = s.render_url.rstrip("/") if s.render_url else ""
+        self._environment = s.environment
+
+        # Choose base URL for direct (non-proxy) calls
+        if s.zepto_base_url:
+            self._zepto_base = s.zepto_base_url.rstrip("/")
+        elif s.environment == "production":
+            self._zepto_base = _PROD_BASE
+        else:
+            self._zepto_base = _QA_BASE
+
+        # Are we routing through the Render proxy?
+        self._use_proxy = (s.environment != "production") and bool(self._render_url)
+
+        if self._use_proxy:
+            log.info(
+                "zepto.adapter.init",
+                mode="proxy",
+                proxy=self._render_url,
+                zepto_target=self._zepto_base,
+            )
+        else:
+            log.info("zepto.adapter.init", mode="direct", target=self._zepto_base)
+
         self._last_request_time: float = 0.0
+
+    def _build_url(self, path: str) -> str:
+        """
+        LOCAL/STAGING  → https://po-integration-backend.onrender.com/api/proxy/zepto/api/v1/...
+        PRODUCTION     → https://silkroute.zepto.co.in/api/v1/...
+        """
+        path = path.lstrip("/")
+        if self._use_proxy:
+            return f"{self._render_url}/api/proxy/zepto/{path}"
+        return f"{self._zepto_base}/{path}"
 
     def _headers(self, idempotency_key: str | None = None) -> dict[str, str]:
         h: dict[str, str] = {
@@ -74,13 +128,12 @@ class ZeptoApiAdapter(BaseApiAdapter):
             h["X-Idempotency-Key"] = idempotency_key
         return h
 
-    def _url(self, path: str) -> str:
-        return f"{self._base_url}/{path.lstrip('/')}"
-
     def _rate_limit_wait(self) -> None:
         elapsed = time.monotonic() - self._last_request_time
         if elapsed < _MIN_REQUEST_INTERVAL:
             time.sleep(_MIN_REQUEST_INTERVAL - elapsed)
+
+    # ── Public API ────────────────────────────────────────────────────────────
 
     def fetch_new_pos(
         self,
@@ -101,9 +154,7 @@ class ZeptoApiAdapter(BaseApiAdapter):
             if page_data is None:
                 break
 
-            purchase_orders: list[dict[str, Any]] = (
-                page_data.get("purchaseOrders") or []
-            )
+            purchase_orders: list[dict[str, Any]] = page_data.get("purchaseOrders") or []
 
             for po in purchase_orders:
                 event_id = str(po.get("eventId") or "")
@@ -123,70 +174,21 @@ class ZeptoApiAdapter(BaseApiAdapter):
                 page=page,
                 pos_this_page=len(purchase_orders),
                 has_next=has_next,
+                via_proxy=self._use_proxy,
             )
 
             if not has_next:
                 break
             page += 1
 
-        log.info("zepto.fetch.done", total=len(results), pages=page - 1, days=days)
+        log.info(
+            "zepto.fetch.done",
+            total=len(results),
+            pages=page - 1,
+            days=days,
+            via_proxy=self._use_proxy,
+        )
         return results
-
-    def _fetch_page(
-        self,
-        days: int,
-        page: int,
-        page_size: int,
-    ) -> dict[str, Any] | None:
-        """Fetch one page from the Zepto PO events endpoint with retry."""
-        url = self._url("/api/v1/external/po/events")
-        params: dict[str, Any] = {
-            "days": min(days, 45),
-            "pageSize": min(page_size, 20),
-            "pageNumber": page,
-            "includeAllPoEvents": "false",
-            "includeLineItemDetails": "true",
-        }
-
-        for attempt, backoff in enumerate(_RETRY_BACKOFF, start=1):
-            self._rate_limit_wait()
-            try:
-                with httpx.Client(timeout=30) as client:
-                    resp = client.get(url, params=params, headers=self._headers())
-                self._last_request_time = time.monotonic()
-
-                if resp.status_code == 429:
-                    wait = int(resp.headers.get("Retry-After", backoff))
-                    log.warning("zepto.fetch.rate_limited", page=page, wait=wait, attempt=attempt)
-                    time.sleep(wait)
-                    continue
-
-                resp.raise_for_status()
-                body = resp.json()
-                # Response shape: {"data": {"purchaseOrders": [...], "hasNext": bool}}
-                return _unwrap_zepto(body)
-
-            except httpx.HTTPStatusError as exc:
-                log.error(
-                    "zepto.fetch.http_error",
-                    status_code=exc.response.status_code,
-                    page=page,
-                    attempt=attempt,
-                    error=_zepto_error_msg(exc.response.text),
-                )
-                if attempt < _MAX_RETRIES and exc.response.status_code >= 500:
-                    time.sleep(backoff)
-                    continue
-                return None
-
-            except Exception as exc:
-                log.error("zepto.fetch.error", error=str(exc), page=page, attempt=attempt)
-                if attempt < _MAX_RETRIES:
-                    time.sleep(backoff)
-                    continue
-                return None
-
-        return None
 
     def send_asn(
         self,
@@ -200,7 +202,7 @@ class ZeptoApiAdapter(BaseApiAdapter):
         Re-implemented from _archive/backend_old/app/services/zepto.py:create_asn
         """
         import uuid as _uuid
-        url = self._url("/api/v1/external/asn")
+        url = self._build_url("/api/v1/external/asn")
         key = idempotency_key or str(_uuid.uuid4())
 
         for attempt, backoff in enumerate(_RETRY_BACKOFF, start=1):
@@ -210,9 +212,22 @@ class ZeptoApiAdapter(BaseApiAdapter):
                     resp = client.post(url, json=payload, headers=self._headers(key))
                 self._last_request_time = time.monotonic()
 
+                body = resp.json()
+
+                # Proxy error check (HTTP 200 but real Zepto error inside)
+                proxy_err = _check_proxy_error(body)
+                if proxy_err:
+                    log.error(
+                        "zepto.asn.proxy_error",
+                        status_code=proxy_err["status_code"],
+                        error=proxy_err["error"],
+                        attempt=attempt,
+                    )
+                    return {"success": False, **proxy_err}
+
                 resp.raise_for_status()
-                data = _unwrap_zepto(resp.json()) or {}
-                asn_number = data.get("data", {}).get("asnNumber")
+                data = _unwrap(body)
+                asn_number = (data.get("data") or {}).get("asnNumber")
                 po_number = payload.get("purchaseOrderDetails", {}).get("purchaseOrderNumber")
                 log.info("zepto.asn.sent", po_number=po_number, asn_number=asn_number)
                 return {
@@ -247,42 +262,159 @@ class ZeptoApiAdapter(BaseApiAdapter):
 
         return {"success": False, "error": "Max retries exceeded"}
 
+    # ── Internal ──────────────────────────────────────────────────────────────
+
+    def _fetch_page(
+        self,
+        days: int,
+        page: int,
+        page_size: int,
+    ) -> dict[str, Any] | None:
+        """Fetch one page from the Zepto PO events endpoint with retry."""
+        url = self._build_url("/api/v1/external/po/events")
+        params: dict[str, Any] = {
+            "days": min(days, 45),
+            "pageSize": min(page_size, 20),
+            "pageNumber": page,
+            "includeAllPoEvents": "false",
+            "includeLineItemDetails": "true",
+        }
+
+        for attempt, backoff in enumerate(_RETRY_BACKOFF, start=1):
+            self._rate_limit_wait()
+            try:
+                with httpx.Client(timeout=30) as client:
+                    resp = client.get(url, params=params, headers=self._headers())
+                self._last_request_time = time.monotonic()
+
+                if resp.status_code == 429:
+                    wait = int(resp.headers.get("Retry-After", backoff))
+                    log.warning(
+                        "zepto.fetch.rate_limited",
+                        page=page, wait=wait, attempt=attempt,
+                    )
+                    time.sleep(wait)
+                    continue
+
+                body = resp.json()
+
+                # Proxy surfaces real Zepto errors as HTTP 200 with status_code field
+                proxy_err = _check_proxy_error(body)
+                if proxy_err:
+                    log.error(
+                        "zepto.fetch.proxy_error",
+                        status_code=proxy_err["status_code"],
+                        error=proxy_err["error"],
+                        page=page,
+                        attempt=attempt,
+                    )
+                    # 401/403 = credential problem; don't retry
+                    if proxy_err["status_code"] in (401, 403):
+                        return None
+                    if attempt < _MAX_RETRIES and proxy_err["status_code"] >= 500:
+                        time.sleep(backoff)
+                        continue
+                    return None
+
+                resp.raise_for_status()
+
+                # _unwrap strips proxy envelope AND Zepto's outer "data" key
+                # giving us {"purchaseOrders": [...], "hasNext": bool}
+                return _unwrap(body)
+
+            except httpx.HTTPStatusError as exc:
+                log.error(
+                    "zepto.fetch.http_error",
+                    status_code=exc.response.status_code,
+                    page=page,
+                    attempt=attempt,
+                    error=_zepto_error_msg(exc.response.text),
+                )
+                if attempt < _MAX_RETRIES and exc.response.status_code >= 500:
+                    time.sleep(backoff)
+                    continue
+                return None
+
+            except Exception as exc:
+                log.error(
+                    "zepto.fetch.error", error=str(exc), page=page, attempt=attempt,
+                )
+                if attempt < _MAX_RETRIES:
+                    time.sleep(backoff)
+                    continue
+                return None
+
+        return None
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _since_to_days(since: datetime | None) -> int:
     """Convert a watermark datetime to the `days` param Zepto expects (1–45)."""
     if since is None:
-        return 7  # default: look back 7 days
+        return 7
     now = datetime.now(UTC)
-    delta = now - since.replace(tzinfo=UTC) if since.tzinfo is None else now - since
-    days = max(1, delta.days + 1)  # +1 for partial day
-    return min(days, 45)
+    delta = now - (since.replace(tzinfo=UTC) if since.tzinfo is None else since)
+    return min(max(1, delta.days + 1), 45)
 
 
-def _unwrap_zepto(raw: Any) -> dict[str, Any] | None:
+def _check_proxy_error(raw: Any) -> dict[str, Any] | None:
     """
-    Zepto response shape: {"data": {"purchaseOrders": [...], "hasNext": bool}}
-    Return the inner `data` dict.
+    Render proxy always returns HTTP 200.
+    When Zepto returns 4xx/5xx, the proxy packs it as:
+      {proxied: true, status_code: <zepto_status>, data: <zepto_body>}
+    Detect and surface the real error so callers don't silently swallow it.
     """
-    if isinstance(raw, dict):
-        inner = raw.get("data")
-        if isinstance(inner, dict):
-            return inner
-        return raw
+    if isinstance(raw, dict) and raw.get("proxied"):
+        status = raw.get("status_code", 200)
+        if isinstance(status, int) and status >= 400:
+            return {
+                "status_code": status,
+                "error": _zepto_error_msg(raw.get("data", "")),
+            }
     return None
 
 
-def _zepto_error_msg(body: str | bytes) -> str:
+def _unwrap(raw: Any) -> dict[str, Any]:
+    """
+    Strip proxy envelope (if present) then strip Zepto's outer "data" key.
+
+    Via proxy:
+      raw = {proxied:true, status_code:200, data: {data: {purchaseOrders:[...]}}}
+      → strip proxy  → {data: {purchaseOrders: [...]}}
+      → strip zepto  → {purchaseOrders: [...], hasNext: false}
+
+    Direct:
+      raw = {data: {purchaseOrders: [...], hasNext: false}}
+      → strip zepto  → {purchaseOrders: [...], hasNext: false}
+    """
+    if not isinstance(raw, dict):
+        return {}
+    # Strip proxy envelope
+    if raw.get("proxied"):
+        raw = raw.get("data") or {}
+        if not isinstance(raw, dict):
+            return {}
+    # Strip Zepto outer "data" key
+    inner = raw.get("data")
+    if isinstance(inner, dict):
+        return inner
+    return raw
+
+
+def _zepto_error_msg(body: str | bytes | Any) -> str:
     import json
     if isinstance(body, bytes):
         body = body.decode("utf-8", errors="replace")
-    try:
-        parsed = json.loads(body)
-    except Exception:
-        return body
-    if isinstance(parsed, dict):
-        errors = parsed.get("errors")
+    if not isinstance(body, (str, dict)):
+        return str(body)
+    if isinstance(body, str):
+        try:
+            body = json.loads(body)
+        except Exception:
+            return body
+    if isinstance(body, dict):
+        errors = body.get("errors")
         if isinstance(errors, list) and errors:
             msgs = [
                 e.get("error") or e.get("message", "")
@@ -293,7 +425,7 @@ def _zepto_error_msg(body: str | bytes) -> str:
             if msgs:
                 return "; ".join(msgs)
         for key in ("message", "error", "detail"):
-            if parsed.get(key) and isinstance(parsed[key], str):
-                return parsed[key]
-        return json.dumps(parsed)
-    return str(parsed)
+            if body.get(key) and isinstance(body[key], str):
+                return body[key]
+        return json.dumps(body)
+    return str(body)

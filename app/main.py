@@ -13,6 +13,7 @@ from app.api.routes.b1_logs import router as b1_logs_router
 from app.api.routes.dashboard import router as dashboard_router
 from app.api.routes.exceptions import router as exceptions_router
 from app.api.routes.health import router as health_router
+from app.api.routes.api_inbox import router as api_inbox_router
 from app.api.routes.inbox import router as inbox_router
 from app.api.routes.master_data import router as master_data_router
 from app.api.routes.pos import router as pos_router
@@ -62,6 +63,7 @@ app.include_router(master_data_router)
 app.include_router(b1_logs_router)
 app.include_router(exceptions_router)
 app.include_router(inbox_router)
+app.include_router(api_inbox_router)
 
 # ── SPA static files (production) ────────────────────────────────────────────
 _dist = Path(__file__).parent.parent / "frontend" / "dist"
