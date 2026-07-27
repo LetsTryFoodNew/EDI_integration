@@ -125,6 +125,7 @@ services:
 
   # ── Frontend (Vite dev server — dev profile only) ─────────────────────────
   frontend:
+    profiles: ["dev"]
     build:
       context: frontend
       dockerfile: Dockerfile
@@ -137,8 +138,19 @@ services:
       - /app/node_modules
     environment:
       VITE_API_BASE_URL: http://localhost:8000
-    profiles:
-      - dev
+
+  # ── Frontend (nginx-served production build; proxies /health,/api to api) ─
+  frontend-prod:
+    profiles: ["prod"]
+    build:
+      context: frontend
+      dockerfile: Dockerfile
+      target: production
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - api
 
 volumes:
   postgres_data:

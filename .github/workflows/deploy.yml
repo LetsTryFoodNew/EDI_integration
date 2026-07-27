@@ -1,0 +1,129 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch: {}
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  backend-check:
+    name: Backend lint & tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: ruff
+        run: ruff check app/
+
+      - name: mypy
+        run: mypy app/ || true # non-blocking until strict typing is caught up across the codebase
+
+      - name: pytest
+        run: pytest
+
+  frontend-check:
+    name: Frontend lint, typecheck & tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run test
+      - run: npm run build
+
+  deploy:
+    name: Deploy to excloud VPS
+    needs: [backend-check, frontend-check]
+    if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+
+      - name: Trust VPS host key
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Rsync project to VPS
+        run: |
+          rsync -az --delete \
+            --exclude='.git' \
+            --exclude='.git.bak' \
+            --exclude='_archive' \
+            --exclude='node_modules' \
+            --exclude='frontend/node_modules' \
+            --exclude='frontend/dist' \
+            --exclude='__pycache__' \
+            --exclude='*.pyc' \
+            --exclude='.venv' \
+            --exclude='venv' \
+            --exclude='.mypy_cache' \
+            --exclude='.ruff_cache' \
+            --exclude='.pytest_cache' \
+            --exclude='tests' \
+            --exclude='data' \
+            --exclude='credentials' \
+            --exclude='.env' \
+            --exclude='.env.*' \
+            --exclude='frontend/.env*' \
+            --exclude='.DS_Store' \
+            ./ "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:${{ secrets.DEPLOY_PATH }}/"
+
+      - name: Write env files on VPS
+        run: |
+          ssh "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
+            "cat > ${{ secrets.DEPLOY_PATH }}/.env" <<'EOF'
+          ${{ secrets.BACKEND_ENV_FILE }}
+          EOF
+          ssh "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
+            "mkdir -p ${{ secrets.DEPLOY_PATH }}/frontend && cat > ${{ secrets.DEPLOY_PATH }}/frontend/.env.production" <<'EOF'
+          ${{ secrets.FRONTEND_ENV_FILE }}
+          EOF
+
+      - name: Build & restart containers on VPS
+        run: |
+          ssh "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" bash -s <<'EOF'
+            set -euo pipefail
+            cd "${{ secrets.DEPLOY_PATH }}"
+            docker compose --profile prod build
+            docker compose --profile prod up -d --remove-orphans
+            docker compose exec -T api alembic upgrade head
+            docker image prune -f
+          EOF
+
+      - name: Health check
+        run: |
+          ssh "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
+            "curl -fsS http://localhost:8000/health"

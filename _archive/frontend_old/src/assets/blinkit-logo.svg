@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none">
+  <!-- Background rounded square -->
+  <rect width="120" height="120" rx="24" fill="#F8A400"/>
+  <!-- Lightning bolt / quick delivery icon -->
+  <path d="M68 18L38 64h26l-12 40 46-52H72L84 18z"
+        fill="#FFFFFF"
+        stroke="#FFFFFF"
+        stroke-width="1"
+        stroke-linejoin="round"/>
+</svg>

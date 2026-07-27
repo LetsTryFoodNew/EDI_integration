@@ -31,3 +31,6 @@ data/
 .DS_Store
 .idea/
 *.swp
+
+# ── Archived legacy repo histories (kept on disk, not in git) ─────────────────
+**/.git.bak/
