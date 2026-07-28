@@ -18,6 +18,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+from app.models._enums import PoStatus
+
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 
 
@@ -262,6 +264,28 @@ class TestZeptoParser:
 
         assert result.success is False
         assert any("line" in e.lower() for e in result.errors)
+
+    def test_expired_po_marked_cancelled_not_pushed_to_sap(self) -> None:
+        payload = self._load("zepto_po_event.json")
+        payload["status"] = "EXPIRED"
+        result = self.parser.parse(_raw(payload, "ZEPTO"))
+
+        assert result.success is True
+        assert result.doc.po_status == PoStatus.CANCELLED
+        assert any("EXPIRED" in w for w in result.warnings)
+
+    def test_expired_po_with_no_line_items_still_parses(self) -> None:
+        # Real Zepto traffic: some EXPIRED POs arrive with no poLineItems at
+        # all. These must not hit the "no line items" failure path — they
+        # still need to land in the DB as CANCELLED for record-keeping.
+        payload = self._load("zepto_po_event.json")
+        payload["status"] = "EXPIRED"
+        payload["poLineItems"] = []
+        result = self.parser.parse(_raw(payload, "ZEPTO"))
+
+        assert result.success is True
+        assert result.doc.po_status == PoStatus.CANCELLED
+        assert result.doc.line_items == []
 
     def test_multi_line_totals_correct(self) -> None:
         payload = self._load("zepto_po_event.json")

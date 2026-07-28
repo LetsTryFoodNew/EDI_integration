@@ -58,6 +58,13 @@ def validate_po(po_id: uuid.UUID) -> ValidateResult:
             log.error("validate.partner_not_found", po_id=str(po_id))
             return ValidateResult(success=False, po_id=po_id, errors=["TradingPartner not found"])
 
+        # Terminal statuses (a dead/expired PO from the source, or a version
+        # superseded by a later revision) are final — running the engine would
+        # incorrectly flip them back to VALIDATED/EXCEPTION.
+        if po.po_status in (PoStatus.CANCELLED, PoStatus.SUPERSEDED):
+            log.info("validate.skipped_terminal_status", po_id=str(po_id), status=po.po_status)
+            return ValidateResult(success=True, po_id=po_id, status=po.po_status)
+
         lines = session.execute(
             select(EdiPoLineItem).where(EdiPoLineItem.po_id == po_id)
         ).scalars().all()

@@ -221,7 +221,7 @@ DATABASE_URL=postgresql+psycopg2://user:pass@host/dbname
 # App
 SECRET_KEY=your-secret-key
 ENVIRONMENT=local        # or "production"
-RENDER_URL=https://po-integration-backend.onrender.com
+# RENDER_URL=https://po-integration-backend.onrender.com
 
 # Blinkit
 BLINKIT_API_KEY=your-blinkit-api-key

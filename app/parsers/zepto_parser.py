@@ -86,6 +86,14 @@ _ZERO = Decimal("0")
 _TWO_DP = Decimal("0.01")
 
 
+# Zepto's own PO-lifecycle `status` field — values confirmed from live traffic
+# (RELEASED, EXPIRED so far). Any status in this set means the PO is dead on
+# Zepto's side (expired, cancelled, etc.) and should never reach SKU mapping
+# or SAP push. Extend this set if Zepto is observed sending other terminal
+# statuses (e.g. a literal "CANCELLED").
+_TERMINAL_ZEPTO_STATUSES: frozenset[str] = frozenset({"EXPIRED"})
+
+
 class ZeptoParser(BaseParser):
     """Parses one Zepto purchaseOrder JSON object (raw_message.payload) into EDI850."""
 
@@ -121,6 +129,7 @@ class ZeptoParser(BaseParser):
 
         fin: dict[str, Any] = payload.get("financialDetails") or {}
         addr: dict[str, Any] = payload.get("address") or {}
+        is_terminal = payload.get("status") in _TERMINAL_ZEPTO_STATUSES
 
         ship_to = EDIAddress(
             name=payload.get("toStoreName"),
@@ -130,7 +139,7 @@ class ZeptoParser(BaseParser):
 
         # Actual Zepto field: "poLineItems" (not "lineItems")
         lines, line_errors = self._parse_lines(payload.get("poLineItems") or [])
-        if not lines:
+        if not lines and not is_terminal:
             return ParseResult(
                 success=False,
                 errors=["No line items could be parsed"] + line_errors,
@@ -161,13 +170,20 @@ class ZeptoParser(BaseParser):
             igst_amount=igst_total or None,
             grand_total=grand_total,
             line_items=lines,
-            po_status=PoStatus.PARSED,
+            po_status=PoStatus.CANCELLED if is_terminal else PoStatus.PARSED,
         )
+
+        warnings = list(line_errors)
+        if is_terminal:
+            warnings.append(
+                f"Zepto reports this PO as status={payload.get('status')!r} — "
+                "parsed for record-keeping only, excluded from validation/SAP push."
+            )
 
         return ParseResult(
             success=True,
             doc=doc,
-            warnings=line_errors,
+            warnings=warnings,
             parser_name="ZeptoParser",
         )
 
