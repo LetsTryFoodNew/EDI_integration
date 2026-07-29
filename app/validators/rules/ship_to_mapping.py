@@ -32,7 +32,7 @@ class ShipToMappingRule(BaseRule):
         mapping = ctx.session.execute(
             select(ShipToMapping).where(
                 ShipToMapping.trading_partner_id == ctx.partner.id,
-                ShipToMapping.buyer_warehouse_code == ship_to,
+                ShipToMapping.buyer_whs_code == ship_to,
                 ShipToMapping.deleted_at.is_(None),
             )
         ).scalar_one_or_none()

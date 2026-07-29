@@ -196,6 +196,11 @@ export interface TradingPartner {
   is_active: boolean;
   gmail_label: string | null;
   b1_card_code: string | null;
+  gstin: string | null;
+  business_type: string | null;
+  group_name: string | null;
+  phone_numbers: string[] | null;
+  email_address: string | null;
   ack_sla_hours: number | null;
   created_at: string;
 }
@@ -204,8 +209,21 @@ export interface MaterialMaster {
   id: string;
   b1_item_code: string;
   description: string | null;
+  frgn_name: string | null;
   hsn_code: string | null;
+  gst_rate: string | null;
+  itms_grp_cod: number | null;
+  items_group_name: string | null;
   uom: string | null;
+  sales_uom: string | null;
+  vat_group_purchase: string | null;
+  vat_group_sales: string | null;
+  case_size: number | null;
+  lot_size: number | null;
+  grammage: string | null;
+  ean: string | null;
+  mrp: string | null;
+  frozen_for: boolean;
   is_active: boolean;
 }
 
@@ -217,6 +235,8 @@ export interface SkuMapping {
   material_id: string | null;
   b1_item_code: string | null;
   qty_per_buyer_uom: string | null;
+  unit_price: string | null;
+  margin: string | null;
   mapping_status: string;
   confidence_score: number | null;
   notes: string | null;
@@ -228,8 +248,27 @@ export interface ShipToMapping {
   trading_partner_id: string;
   partner_code: string;
   buyer_whs_code: string;
+  buyer_warehouse_name: string | null;
   b1_whs_code: string | null;
+  mapping_status: string;
   is_active: boolean;
+  address_line: string | null;
+  address_type: string[] | null;
+  street: string | null;
+  block: string | null;
+  city: string | null;
+  zip_code: string | null;
+  state: string | null;
+  country: string | null;
+  gst_registration_no: string | null;
+  gst_type: string[] | null;
+}
+
+export interface MasterDataSyncResult {
+  created: number;
+  updated: number;
+  skipped: number;
+  errors: string[];
 }
 
 // ── B1 Logs ───────────────────────────────────────────────────────────────────

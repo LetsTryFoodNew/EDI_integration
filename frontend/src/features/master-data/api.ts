@@ -1,5 +1,12 @@
 import apiClient from "@/lib/api-client";
-import type { PaginatedResponse, TradingPartner, MaterialMaster, SkuMapping, ShipToMapping } from "@/types";
+import type {
+  PaginatedResponse,
+  TradingPartner,
+  MaterialMaster,
+  SkuMapping,
+  ShipToMapping,
+  MasterDataSyncResult,
+} from "@/types";
 
 // Partners
 export async function fetchPartners(params?: { limit?: number; offset?: number }): Promise<PaginatedResponse<TradingPartner>> {
@@ -7,8 +14,9 @@ export async function fetchPartners(params?: { limit?: number; offset?: number }
   return res.data;
 }
 
+// PUT — ops-side manual correction. Never used for bulk SAP data; see syncPartners.
 export async function updatePartner(id: string, payload: Partial<TradingPartner>): Promise<TradingPartner> {
-  const res = await apiClient.patch<TradingPartner>(`/api/master-data/partners/${id}`, payload);
+  const res = await apiClient.put<TradingPartner>(`/api/master-data/partners/${id}`, payload);
   return res.data;
 }
 
@@ -31,18 +39,39 @@ export async function fetchSkuMappings(params?: { partner_code?: string; search?
 }
 
 export async function updateSkuMapping(id: string, payload: { b1_item_code: string; qty_per_buyer_uom?: string }): Promise<SkuMapping> {
-  const res = await apiClient.patch<SkuMapping>(`/api/master-data/sku-mappings/${id}`, payload);
+  const res = await apiClient.put<SkuMapping>(`/api/master-data/sku-mappings/${id}`, payload);
   return res.data;
 }
 
 // Ship-to Mappings
 export async function fetchShipToMappings(params?: { partner_code?: string; limit?: number; offset?: number }): Promise<PaginatedResponse<ShipToMapping>> {
   const filtered = Object.fromEntries(Object.entries(params ?? {}).filter(([, v]) => v !== undefined && v !== ""));
-  const res = await apiClient.get<PaginatedResponse<ShipToMapping>>("/api/master-data/ship-to-mappings", { params: filtered });
+  const res = await apiClient.get<PaginatedResponse<ShipToMapping>>("/api/master-data/ship-to", { params: filtered });
   return res.data;
 }
 
-export async function updateShipToMapping(id: string, payload: { b1_whs_code: string }): Promise<ShipToMapping> {
-  const res = await apiClient.patch<ShipToMapping>(`/api/master-data/ship-to-mappings/${id}`, payload);
+export async function updateShipToMapping(id: string, payload: { b1_whs_code: string; is_active?: boolean }): Promise<ShipToMapping> {
+  const res = await apiClient.put<ShipToMapping>(`/api/master-data/ship-to/${id}`, payload);
+  return res.data;
+}
+
+// Bulk sync (POST) — used by the SAP-push connector, not the ops UI directly.
+export async function syncPartners(partners: Record<string, unknown>[]): Promise<MasterDataSyncResult> {
+  const res = await apiClient.post<MasterDataSyncResult>("/api/master-data/partners/sync", { partners });
+  return res.data;
+}
+
+export async function syncMaterials(items: Record<string, unknown>[]): Promise<MasterDataSyncResult> {
+  const res = await apiClient.post<MasterDataSyncResult>("/api/master-data/materials/sync", { items });
+  return res.data;
+}
+
+export async function syncSkuMappings(mappings: Record<string, unknown>[]): Promise<MasterDataSyncResult> {
+  const res = await apiClient.post<MasterDataSyncResult>("/api/master-data/sku-mappings/sync", { mappings });
+  return res.data;
+}
+
+export async function syncShipToMappings(mappings: Record<string, unknown>[]): Promise<MasterDataSyncResult> {
+  const res = await apiClient.post<MasterDataSyncResult>("/api/master-data/ship-to/sync", { mappings });
   return res.data;
 }

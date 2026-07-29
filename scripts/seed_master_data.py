@@ -205,7 +205,7 @@ def seed_ship_to_mappings(session: object, partners: dict[str, TradingPartner]) 
             continue
         existing = (
             session.query(ShipToMapping)
-            .filter_by(trading_partner_id=partner.id, buyer_warehouse_code=s["whs_code"])
+            .filter_by(trading_partner_id=partner.id, buyer_whs_code=s["whs_code"])
             .first()
         )
         if existing:
@@ -213,7 +213,7 @@ def seed_ship_to_mappings(session: object, partners: dict[str, TradingPartner]) 
         session.add(ShipToMapping(
             id=uuid.uuid4(),
             trading_partner_id=partner.id,
-            buyer_warehouse_code=s["whs_code"],
+            buyer_whs_code=s["whs_code"],
             buyer_warehouse_name=s["whs_name"],
             b1_whs_code=s["b1_whs"],
             mapping_status=MappingStatus.MANUALLY_MAPPED,

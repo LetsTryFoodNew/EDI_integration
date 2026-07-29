@@ -402,7 +402,7 @@ function ShipToTab() {
         className="w-48"
       />
       {isLoading ? (
-        <TableSkeleton rows={4} cols={4} />
+        <TableSkeleton rows={4} cols={6} />
       ) : !data?.items.length ? (
         <EmptyState title="No ship-to mappings" description="No mappings match your filters." />
       ) : (
@@ -411,6 +411,8 @@ function ShipToTab() {
             <TableRow>
               <TableHead>Partner</TableHead>
               <TableHead>Buyer Warehouse</TableHead>
+              <TableHead>State</TableHead>
+              <TableHead>GSTIN</TableHead>
               <TableHead>B1 WhsCode</TableHead>
               <TableHead>Status</TableHead>
               <TableHead></TableHead>
@@ -420,7 +422,14 @@ function ShipToTab() {
             {data.items.map((row) => (
               <TableRow key={row.id}>
                 <TableCell className="text-xs text-muted-foreground">{row.partner_code}</TableCell>
-                <TableCell className="font-mono text-sm">{row.buyer_whs_code}</TableCell>
+                <TableCell>
+                  <p className="font-mono text-sm">{row.buyer_whs_code}</p>
+                  {row.buyer_warehouse_name && (
+                    <p className="text-xs text-muted-foreground">{row.buyer_warehouse_name}</p>
+                  )}
+                </TableCell>
+                <TableCell className="text-sm">{row.state ?? <span className="text-muted-foreground">—</span>}</TableCell>
+                <TableCell className="font-mono text-xs">{row.gst_registration_no ?? <span className="text-muted-foreground">—</span>}</TableCell>
                 <TableCell>
                   {editingId === row.id ? (
                     <Input

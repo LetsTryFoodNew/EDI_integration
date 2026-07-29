@@ -1,5 +1,18 @@
 # Changelog
 
+## Phase 8 — Master Data: SAP-push sync architecture (2026-07-18)
+- New REST convention for all Master Data resources (partners, materials, sku-mappings, ship-to):
+  `POST .../sync` (bulk upsert pushed from SAP — middleware never calls SAP Service Layer just to read master data), `GET ...` (reads local tables only), `PUT .../{id}` (ops-side manual correction — was PATCH, switched per the new convention). Sync writes never overwrite ops-side mapping decisions (`material_id`, `mapping_status`, `b1_whs_code`) — those only change via PUT.
+- Migration `0005_master_data_sap_sync_fields.py` — brings the schema in line with the SAP-sync fields the user's dbdiagram (`Customer`/`Item_master`/`SKU_Mapping`/`Ship_to_mapping`) specifies:
+  - `trading_partners`: + `business_type`, `group_name`, `phone_numbers[]`, `email_address`; `gstin` (already existed) now exposed via the API.
+  - `material_master`: + `itms_grp_cod`, `items_group_name`, `frgn_name`, `sales_uom`, `vat_group_purchase`, `vat_group_sales`, `frozen_for`, `lot_size`, `grammage` — needed for correct B1 tax-code mapping and to stop pushing frozen/invalid items.
+  - `sku_mapping`: + `unit_price`, `margin` (customer-specific negotiated pricing — required by the Phase 5 `PriceVarianceRule`, previously nowhere to store).
+  - `ship_to_mapping`: **bug fix** — renamed `buyer_warehouse_code` → `buyer_whs_code` (the routes/schema/frontend already assumed this name; the mismatch meant `GET/PATCH /api/master-data/ship-to` would 500 — confirmed by direct DB inspection, fixed here). Added `is_active` (also already assumed by the response schema but missing from the table). Added structured address + GSTIN fields (`street`, `city`, `state`, `zip_code`, `country`, `gst_registration_no`, `gst_type[]`) — `state` in particular was missing entirely, and CGST/SGST vs IGST determination (CLAUDE.md section 8) depends on comparing seller state to ship-to state.
+- `app/api/routes/master_data.py` — added `POST /partners/sync` (update-only: unknown codes are skipped + reported, never auto-created, per "never invent partners" rule — new retailer onboarding needs a source_channel decision sync can't make), `POST /materials/sync` (create-or-update, `frozen_for`/`is_active` always overwritten from SAP since those are SAP's authoritative flags), `POST /sku-mappings/sync`, `POST /ship-to/sync` (create-or-update; new ship-to rows land as `mapping_status=UNMAPPED` for ops to map, same pattern as SKU auto-mapping).
+- **Also fixed**: frontend was calling `/api/master-data/ship-to-mappings` while the backend route was `/api/master-data/ship-to` — the Ship-to Mappings tab was silently 404ing. Frontend `api.ts` corrected, `updatePartner`/`updateSkuMapping`/`updateShipToMapping` switched from `.patch` to `.put`.
+- `frontend/src/features/master-data/MasterDataPage.tsx` — Ship-to tab now shows State/GSTIN columns.
+- Verified: migration up/downgrade/up-again clean; all 4 master-data models validate against their Pydantic response schemas against live seed data; full HTTP round-trip tested (GET, POST /sync create+update+skip paths, PUT) against the running API; `tsc --noEmit` and `oxlint` clean.
+
 ## Phase 0 — CI/CD Deploy Fixes (2026-07-27)
 - `pyproject.toml` — removed `types-bcrypt==4.0.0.20240106` dev dependency; the package doesn't exist on PyPI and was breaking `pip install -e ".[dev]"` in CI. `bcrypt` ships its own inline types, so no stub package is needed.
 - `docker-compose.yml` — removed public port mappings on `postgres` (`5433:5432`) and `redis` (`6379:6379`); both are only reached by other containers over the internal Docker network and had no reason to be exposed on the VPS host.

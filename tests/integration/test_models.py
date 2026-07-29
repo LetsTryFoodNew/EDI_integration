@@ -220,7 +220,7 @@ class TestShipToMapping:
         s = ShipToMapping(
             id=uuid.uuid4(),
             trading_partner_id=partner.id,
-            buyer_warehouse_code="BL-MUM-001",
+            buyer_whs_code="BL-MUM-001",
             buyer_warehouse_name="Blinkit Mumbai DC",
             b1_whs_code="WH01",
             mapping_status=MappingStatus.MANUALLY_MAPPED,
