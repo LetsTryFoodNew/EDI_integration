@@ -174,7 +174,8 @@ class TestSkuMapping:
             material_id=material.id,
             qty_per_buyer_uom=1,
             buyer_uom="PCS",
-            mapping_status=MappingStatus.MANUALLY_MAPPED,
+            unit_price=32.50,
+            margin=35.0,
         )
         session.add(mapping)
         session.flush()
@@ -182,7 +183,8 @@ class TestSkuMapping:
         reloaded = session.get(SkuMapping, mapping.id)
         assert reloaded is not None
         assert reloaded.buyer_sku == "8901234560001"
-        assert reloaded.mapping_status == MappingStatus.MANUALLY_MAPPED
+        assert reloaded.material_id == material.id
+        assert reloaded.is_active is True
 
     def test_unique_partner_sku_constraint(
         self, session: Session, partner: TradingPartner, material: MaterialMaster
@@ -194,25 +196,26 @@ class TestSkuMapping:
                 buyer_sku="DUPE-SKU",
                 material_id=material.id,
                 qty_per_buyer_uom=1,
-                mapping_status=MappingStatus.MANUALLY_MAPPED,
             ))
         with pytest.raises(Exception):
             session.flush()
 
-    def test_unmapped_sku_no_material(self, session: Session, partner: TradingPartner) -> None:
-        mapping = SkuMapping(
+    def test_material_id_is_required(self, session: Session, partner: TradingPartner) -> None:
+        """
+        material_id is NOT NULL as of migration 0009: SAP is the sole author of
+        SKU_Mapping and b1ItemCode is not-null there, so every row is a confirmed
+        mapping. An unresolvable buyer SKU is a PO-line exception
+        (E002_SKU_UNRESOLVED), never a half-populated row here.
+        """
+        session.add(SkuMapping(
             id=uuid.uuid4(),
             trading_partner_id=partner.id,
             buyer_sku="UNKNOWN-SKU",
             material_id=None,
             qty_per_buyer_uom=1,
-            mapping_status=MappingStatus.UNMAPPED,
-        )
-        session.add(mapping)
-        session.flush()
-        reloaded = session.get(SkuMapping, mapping.id)
-        assert reloaded.material_id is None
-        assert reloaded.mapping_status == MappingStatus.UNMAPPED
+        ))
+        with pytest.raises(Exception):
+            session.flush()
 
 
 class TestShipToMapping:

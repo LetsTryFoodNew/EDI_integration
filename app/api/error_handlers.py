@@ -265,7 +265,7 @@ def register_error_handlers(app: FastAPI) -> None:
                 f"{n} field{'s' if n != 1 else ''} cannot be changed by this endpoint."
             )
             hint = "Send the current value, or omit the field entirely."
-        elif isinstance(detail, (dict, list)):
+        elif isinstance(detail, dict | list):
             details = detail if isinstance(detail, list) else [detail]
             message = "Request rejected."
 
