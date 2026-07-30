@@ -16,6 +16,13 @@ export interface User {
   is_active: boolean;
 }
 
+export interface LoginResponse {
+  user: User;
+  access_token: string;
+  token_type: string;
+  expires_in: number;
+}
+
 // ── POs ───────────────────────────────────────────────────────────────────────
 
 export interface POListItem {
@@ -188,80 +195,88 @@ export interface ExceptionItem {
 
 // ── Master Data ───────────────────────────────────────────────────────────────
 
+// Customer (parent). Fields mirror the Customer table; source_channel / gmail_label /
+// b1_card_code / ack_sla_hours are integration config the middleware owns.
 export interface TradingPartner {
   id: string;
-  code: string;
-  name: string;
+  code: string;                        // customerCode
+  name: string;                        // customerName
   source_channel: string;
-  is_active: boolean;
+  is_active: boolean;                  // status
   gmail_label: string | null;
   b1_card_code: string | null;
   gstin: string | null;
-  business_type: string | null;
-  group_name: string | null;
-  phone_numbers: string[] | null;
-  email_address: string | null;
+  business_type: string | null;        // customerBusinessType
+  group_name: string | null;           // customerGroupName
+  phone_numbers: string[] | null;      // phoneNumber[]
+  email_address: string | null;        // emailAddress
   ack_sla_hours: number | null;
   created_at: string;
 }
 
+// Item_master — mirrors SAP B1 OITM 1:1.
 export interface MaterialMaster {
   id: string;
-  b1_item_code: string;
-  description: string | null;
+  item_code: string;                   // OITM.ItemCode
+  item_name: string | null;            // OITM.ItemName
   frgn_name: string | null;
-  hsn_code: string | null;
-  gst_rate: string | null;
+  hsn: string | null;
+  tax_rate: string | null;
   itms_grp_cod: number | null;
   items_group_name: string | null;
-  uom: string | null;
-  sales_uom: string | null;
-  vat_group_purchase: string | null;
-  vat_group_sales: string | null;
+  invntry_uom: string | null;
+  sal_unit_msr: string | null;
+  vat_group_pu: string | null;
+  vat_group_sa: string | null;
   case_size: number | null;
   lot_size: number | null;
   grammage: string | null;
-  ean: string | null;
+  ean_code: string | null;
   mrp: string | null;
   frozen_for: boolean;
-  is_active: boolean;
+  valid_for: boolean;
 }
 
-export interface SkuMapping {
+// SKU_Mapping row nested under its parent customer.
+// No mapping_status: SAP is the sole author and b1ItemCode is not-null, so every row
+// is a confirmed mapping. `mrp` is joined from Item_master via the item code.
+export interface CustomerSkuMapping {
   id: string;
-  trading_partner_id: string;
-  partner_code: string;
-  buyer_sku: string;
-  material_id: string | null;
-  b1_item_code: string | null;
-  qty_per_buyer_uom: string | null;
-  unit_price: string | null;
+  buyer_sku: string;                   // buyerSKUCode
+  item_name: string | null;            // itemName
+  b1_item_code: string;                // b1ItemCode
+  unit_price: string | null;           // unitPrice
   margin: string | null;
-  mapping_status: string;
-  confidence_score: number | null;
-  notes: string | null;
+  mrp: string | null;                  // from Item_master
+  qty_per_buyer_uom: string | null;
+  is_active: boolean;                  // status
   created_at: string;
+  updated_at: string;
 }
 
-export interface ShipToMapping {
+// Ship_to_mapping row nested under its parent customer.
+export interface CustomerShipTo {
   id: string;
-  trading_partner_id: string;
-  partner_code: string;
-  buyer_whs_code: string;
-  buyer_warehouse_name: string | null;
+  dc_code: string;                     // dcCode
+  warehouse_name: string | null;
   b1_whs_code: string | null;
-  mapping_status: string;
-  is_active: boolean;
-  address_line: string | null;
-  address_type: string[] | null;
+  address: string | null;
+  address_type: string[] | null;       // addressType[]
   street: string | null;
   block: string | null;
   city: string | null;
-  zip_code: string | null;
+  zip_code: string | null;             // zipCode
   state: string | null;
   country: string | null;
-  gst_registration_no: string | null;
-  gst_type: string[] | null;
+  gst_regn_no: string | null;          // GSTRegnNO
+  gst_type: string[] | null;           // gstType[]
+  mapping_status: string;
+  is_active: boolean;
+}
+
+export interface CustomerDetail extends TradingPartner {
+  sku_mappings: CustomerSkuMapping[];
+  ship_to_mappings: CustomerShipTo[];
 }
 
 export interface MasterDataSyncResult {

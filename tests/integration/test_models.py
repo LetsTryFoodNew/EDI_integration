@@ -92,12 +92,12 @@ def partner(session: Session) -> TradingPartner:
 def material(session: Session) -> MaterialMaster:
     m = MaterialMaster(
         id=uuid.uuid4(),
-        b1_item_code="LTFM001",
-        description="Peri Peri Makhana 30g",
-        hsn_code="20089900",
-        gst_rate=12.0,
-        uom="PCS",
-        is_active=True,
+        item_code="LTFM001",
+        item_name="Peri Peri Makhana 30g",
+        hsn="20089900",
+        tax_rate=12.0,
+        invntry_uom="PCS",
+        valid_for=True,
     )
     session.add(m)
     session.flush()

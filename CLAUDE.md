@@ -524,8 +524,8 @@ Deliverables:
    - `TotalReconciliationRule` — sum of line totals == header grand_total ± rounding.
    - `MoqRule` — minimum order quantity check.
 3. Results written to `edi_validation_issues`. PO status set to `VALIDATED`, `EXCEPTION`, or kept at `PARSED` depending on severity.
-4. **Auto-mapping helper** for SKUs: EAN exact match → fuzzy description match (threshold 0.85 via `rapidfuzz`) → flag for manual review. Auto-mapped records get `mapping_status='AUTO_MAPPED'`, `confidence_score`.
-5. Manual review UI endpoint (basic, JSON-only — full UI in Phase 8): `GET /api/exceptions`, `POST /api/sku-mapping`.
+4. **SKU resolution is lookup-only — SAP owns `sku_mapping`.** *(Revised 2026-07-18; supersedes the original auto-mapping design.)* `SkuMappingRule` does an exact `(partner, buyer_sku)` lookup and nothing more. The former EAN-reuse and `rapidfuzz` fuzzy-description matching (threshold 0.85) were **removed**: a 0.86 match between "Salted Almonds 100g" and "Salted Cashews 100g" would post a Sales Order for the wrong product and ship the wrong goods. Consequently `sku_mapping` has no `mapping_status` or `confidence_score` — the master-data schema declares `b1ItemCode [not null]`, so every row is a confirmed mapping by construction, and `material_id` is `NOT NULL`.
+5. A PO line whose buyer SKU has no mapping raises `E002_SKU_UNRESOLVED` (ERROR) and the PO becomes `EXCEPTION`. **The fix is made in SAP, not here** — add the mapping, re-run `POST /api/master-data/sku-mappings/sync`, then retry the PO. There is deliberately no endpoint to create or edit a mapping locally (no `PUT /api/master-data/sku-mappings/{id}`, no `POST /api/sku-mapping`), so a later sync can never silently overwrite an ops edit. Review surface: `GET /api/exceptions`, `GET /api/dashboard/unmapped-skus`, `GET /api/master-data/sku-mappings` (read-only).
 6. Tests for each rule covering pass/fail/edge cases.
 
 **Exit criteria:** Running validation on Phase 3/4 output produces correct mapping_status and validation_issues; ~80%+ of SKUs auto-mapped after a single ops review session.

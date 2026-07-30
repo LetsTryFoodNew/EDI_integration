@@ -41,6 +41,19 @@ class UserResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class LoginResponse(BaseModel):
+    """
+    Login result. The same JWT is returned two ways so both client styles work:
+      - `access_token` in the body -> server-to-server callers send it as
+        `Authorization: Bearer <token>` (e.g. the SAP master-data push).
+      - an httpOnly `edi_token` cookie is also set -> used by the browser SPA.
+    """
+    user: UserResponse
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int          # seconds until the token expires
+
+
 # ── POs ────────────────────────────────────────────────────────────────────────
 
 class POListItem(BaseModel):
@@ -239,19 +252,18 @@ class ResolveExceptionRequest(BaseModel):
 
 # ── Master Data ────────────────────────────────────────────────────────────────
 #
-# REST convention across all master-data resources (partners, materials, sku
-# mappings, ship-to mappings):
-#   POST .../sync   — bulk upsert pushed FROM SAP. SAP-side data changes land here;
-#                      the middleware never re-queries SAP's Service Layer just to
-#                      read master data (saves Service Layer session/license slots —
-#                      see CLAUDE.md section 7 on session limits). Sync is idempotent,
-#                      keyed by natural key (code / b1_item_code / buyer_sku / buyer_whs_code).
-#   GET  ...        — reads what's in OUR table (never calls SAP live).
-#   PUT  .../{id}   — ops-side manual correction (e.g. mapping an unmapped SKU).
-#                     Sync (above) and manual PUT write to different field sets so
-#                     an ops correction is never silently clobbered by the next sync:
-#                     sync never touches mapping_status/material_id/b1_whs_code once
-#                     they've been manually set (see per-endpoint docstrings below).
+# REST convention across all master-data resources:
+#   POST .../sync   — bulk upsert pushed FROM SAP. SAP-side changes land here; the
+#                     middleware never re-queries SAP's Service Layer just to read
+#                     master data (Service Layer sessions are licensed and capped —
+#                     CLAUDE.md section 7). Idempotent, keyed by natural key.
+#   GET  ...        — reads OUR tables (never calls SAP live).
+#   PUT  .../{id}   — ops-side manual correction (partners and ship-to only).
+#
+# SKU mappings have no PUT: SAP is their sole author (b1ItemCode is not-null, so every
+# row is a confirmed mapping). A PO line whose buyer SKU has no mapping is raised as
+# E002_SKU_UNRESOLVED against the PO, and is fixed in SAP, not here.
+# Ship-to sync still never touches b1_whs_code — that mapping remains an ops decision.
 
 class TradingPartnerResponse(BaseModel):
     id: uuid.UUID
@@ -273,19 +285,86 @@ class TradingPartnerResponse(BaseModel):
 
 
 class TradingPartnerUpdate(BaseModel):
+    # Accepted-but-immutable, so GET -> edit -> PUT round-trips cleanly.
+    id: uuid.UUID | None = None
+    code: str | None = None
+    created_at: datetime | None = None
+
+    # Editable: governs future routing only. Existing raw_messages / POs carry their
+    # own source_channel stamped at ingestion, so changing this rewrites no history.
+    # This is the normal onboarding step: MANUAL -> API / WEBHOOK / EMAIL.
+    source_channel: str | None = None
+    webhook_secret: str | None = None
+    asn_sla_hours: int | None = None
+
     name: str | None = None
     is_active: bool | None = None
     b1_card_code: str | None = None
     ack_sla_hours: int | None = None
     gmail_label: str | None = None
+    gstin: str | None = None
     business_type: str | None = None
     group_name: str | None = None
     phone_numbers: list[str] | None = None
     email_address: str | None = None
 
+    model_config = {"extra": "forbid"}
+
+
+class TradingPartnerCreate(BaseModel):
+    """
+    Onboard a new trading partner.
+
+    Deliberately separate from `POST /partners/sync`, which stays update-only: a bulk
+    push of SAP's full customer list must never mass-create partners here, because most
+    SAP business partners are not EDI trading partners. Creating one is an explicit act.
+
+    `source_channel` defaults to MANUAL — the safe state. The scheduler only polls
+    partners whose channel is API, or EMAIL *with* a gmail_label, so a MANUAL partner
+    accepts master data and sits inert until its integration is wired up.
+    """
+    code: str = Field(min_length=1, max_length=50)
+    name: str = Field(min_length=1, max_length=255)
+    source_channel: str = "MANUAL"
+
+    # Integration config — only meaningful once an adapter/parser exists for this code.
+    gmail_label: str | None = None
+    webhook_secret: str | None = None
+    ack_sla_hours: int = 24
+    asn_sla_hours: int = 48
+
+    # Master data — normally supplied later by POST /partners/sync.
+    b1_card_code: str | None = None
+    gstin: str | None = None
+    business_type: str | None = None
+    group_name: str | None = None
+    phone_numbers: list[str] | None = None
+    email_address: str | None = None
+    is_active: bool = True
+
+    model_config = {"extra": "forbid"}
+
+
+class TradingPartnerWriteResponse(TradingPartnerResponse):
+    """
+    Partner after a create or update, plus anything the caller should know before
+    expecting POs to flow (missing parser, unset gmail_label, inert MANUAL channel).
+    """
+    warnings: list[str] = []
+
 
 class TradingPartnerSyncItem(BaseModel):
     """One Business Partner / Customer record as SAP represents it."""
+    # ── Accepted for GET -> sync round-trips; ignored, never written ──────────
+    id: uuid.UUID | None = None
+    source_channel: str | None = None
+    gmail_label: str | None = None
+    ack_sla_hours: int | None = None
+    asn_sla_hours: int | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    is_active: bool | None = None      # alias of `status`; `status` wins if both sent
+
     code: str = Field(min_length=1, max_length=50)
     name: str = Field(min_length=1, max_length=255)
     b1_card_code: str | None = None
@@ -294,101 +373,183 @@ class TradingPartnerSyncItem(BaseModel):
     group_name: str | None = None
     phone_numbers: list[str] | None = None
     email_address: str | None = None
+    status: bool | None = None
 
+
+    model_config = {"extra": "forbid"}
 
 class TradingPartnerSyncRequest(BaseModel):
     partners: list[TradingPartnerSyncItem] = Field(min_length=1, max_length=2000)
 
 
 class MaterialMasterResponse(BaseModel):
+    """Item_master — column names mirror SAP B1 OITM 1:1."""
     id: uuid.UUID
-    b1_item_code: str
-    description: str | None
+    item_code: str
+    item_name: str | None
     frgn_name: str | None
-    hsn_code: str | None
-    gst_rate: Decimal | None
+    hsn: str | None
+    tax_rate: Decimal | None
     itms_grp_cod: int | None
     items_group_name: str | None
-    uom: str | None
-    sales_uom: str | None
-    vat_group_purchase: str | None
-    vat_group_sales: str | None
+    invntry_uom: str | None
+    sal_unit_msr: str | None
+    vat_group_pu: str | None
+    vat_group_sa: str | None
     case_size: int | None
     lot_size: int | None
     grammage: str | None
-    ean: str | None
+    ean_code: str | None
     mrp: Decimal | None
     frozen_for: bool
-    is_active: bool
+    valid_for: bool
 
     model_config = {"from_attributes": True}
 
 
 class MaterialMasterCreate(BaseModel):
-    b1_item_code: str = Field(min_length=1, max_length=100)
-    description: str | None = None
-    hsn_code: str | None = None
-    uom: str | None = None
+    """
+    Manual single-item add. Accepts the full Item_master field set — a partial schema
+    here would silently drop tax_rate/mrp/ean_code and create a half-populated item.
+    """
+    item_code: str = Field(min_length=1, max_length=50)
+    item_name: str = Field(min_length=1, max_length=500)
+    frgn_name: str | None = None
+    hsn: str | None = None
+    tax_rate: Decimal | None = None
+    itms_grp_cod: int | None = None
+    items_group_name: str | None = None
+    # NOT NULL on the table — default rather than let a None reach the insert.
+    invntry_uom: str = Field(default="PCS", min_length=1, max_length=20)
+    sal_unit_msr: str | None = None
+    vat_group_pu: str | None = None
+    vat_group_sa: str | None = None
+    case_size: int | None = None
+    lot_size: int | None = None
+    grammage: str | None = None
+    ean_code: str | None = None
+    mrp: Decimal | None = None
+    frozen_for: bool = False
+    valid_for: bool = True
+
+    model_config = {"extra": "forbid"}
+
+
+class MaterialMasterUpdate(BaseModel):
+    """
+    Ops-side edit of a single item. All fields optional — only the keys you send are
+    written. Note that a later `POST /materials/sync` from SAP overwrites these, since
+    SAP remains the source of truth for Item_master.
+    """
+    # Identity fields are accepted so a client can GET, edit one value, and PUT the
+    # whole object back. They are ignored when unchanged and rejected when changed —
+    # see the immutability note in the route.
+    id: uuid.UUID | None = None
+    item_code: str | None = None
+
+    item_name: str | None = Field(default=None, min_length=1, max_length=500)
+    frgn_name: str | None = None
+    hsn: str | None = None
+    tax_rate: Decimal | None = None
+    itms_grp_cod: int | None = None
+    items_group_name: str | None = None
+    invntry_uom: str | None = Field(default=None, min_length=1, max_length=20)
+    sal_unit_msr: str | None = None
+    vat_group_pu: str | None = None
+    vat_group_sa: str | None = None
+    case_size: int | None = None
+    lot_size: int | None = None
+    grammage: str | None = None
+    ean_code: str | None = None
+    mrp: Decimal | None = None
+    frozen_for: bool | None = None
+    valid_for: bool | None = None
+
+    model_config = {"extra": "forbid"}
 
 
 class MaterialMasterSyncItem(BaseModel):
     """One SAP B1 OITM (Item Master) record."""
-    b1_item_code: str = Field(min_length=1, max_length=50)
-    description: str = Field(min_length=1, max_length=500)
+    # ── Accepted for GET -> sync round-trips; ignored, never written ──────────
+    id: uuid.UUID | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    uom_group: str | None = None
+
+    item_code: str = Field(min_length=1, max_length=50)
+    item_name: str = Field(min_length=1, max_length=500)
     frgn_name: str | None = None
-    hsn_code: str | None = None
-    gst_rate: Decimal | None = None
+    hsn: str | None = None
+    tax_rate: Decimal | None = None
     itms_grp_cod: int | None = None
     items_group_name: str | None = None
-    uom: str | None = None
-    sales_uom: str | None = None
-    vat_group_purchase: str | None = None
-    vat_group_sales: str | None = None
+    invntry_uom: str = Field(default="PCS", min_length=1, max_length=20)  # NOT NULL on table
+    sal_unit_msr: str | None = None
+    vat_group_pu: str | None = None
+    vat_group_sa: str | None = None
     case_size: int | None = None
     lot_size: int | None = None
     grammage: str | None = None
-    ean: str | None = None
+    ean_code: str | None = None
     mrp: Decimal | None = None
     frozen_for: bool = False
-    valid_for: bool = True  # B1's Y/N flag -> our is_active
+    valid_for: bool = True
 
+
+    model_config = {"extra": "forbid"}
 
 class MaterialMasterSyncRequest(BaseModel):
     items: list[MaterialMasterSyncItem] = Field(min_length=1, max_length=2000)
 
 
 class SkuMappingResponse(BaseModel):
+    """
+    SKU_Mapping row. No mapping_status/confidence_score: SAP is the only author and
+    b1ItemCode is not-null, so every row here is a confirmed mapping. `mrp` is joined
+    from Item_master via the item code — it is item data, not customer-specific.
+    """
     id: uuid.UUID
     trading_partner_id: uuid.UUID
     partner_code: str
     buyer_sku: str
-    material_id: uuid.UUID | None
-    b1_item_code: str | None
-    qty_per_buyer_uom: Decimal | None
+    item_name: str | None
+    b1_item_code: str
     unit_price: Decimal | None
     margin: Decimal | None
-    mapping_status: str
-    confidence_score: float | None
-    notes: str | None
+    mrp: Decimal | None
+    qty_per_buyer_uom: Decimal | None
+    is_active: bool
     created_at: datetime
+    updated_at: datetime
 
     model_config = {"from_attributes": True}
 
 
-class SkuMappingUpdate(BaseModel):
-    b1_item_code: str
-    qty_per_buyer_uom: Decimal = Field(default=Decimal("1"))
-    notes: str | None = None
-
-
 class SkuMappingSyncItem(BaseModel):
-    """One customer-SKU pricing record, e.g. from a SAP price list / contract."""
+    """
+    One customer-SKU record from SAP. b1_item_code is required — it is the whole point
+    of the row. Sync fails the row loudly if that item code is absent from Item_master
+    (the schema marks that ref "no cascade — fail loud on unmapped item").
+    """
+    # ── Accepted for GET -> sync round-trips; ignored, never written ──────────
+    id: uuid.UUID | None = None
+    trading_partner_id: uuid.UUID | None = None
+    mrp: Decimal | None = None         # lives on Item_master, shown here for convenience
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    is_active: bool | None = None      # alias of `status`; `status` wins if both sent
+
     partner_code: str = Field(min_length=1, max_length=50)
     buyer_sku: str = Field(min_length=1, max_length=100)
+    b1_item_code: str = Field(min_length=1, max_length=50)
     item_name: str | None = None
     unit_price: Decimal | None = None
     margin: Decimal | None = None
+    qty_per_buyer_uom: Decimal | None = None
+    status: bool | None = None
 
+
+    model_config = {"extra": "forbid"}
 
 class SkuMappingSyncRequest(BaseModel):
     mappings: list[SkuMappingSyncItem] = Field(min_length=1, max_length=2000)
@@ -418,12 +579,47 @@ class ShipToMappingResponse(BaseModel):
 
 
 class ShipToMappingUpdate(BaseModel):
-    b1_whs_code: str = Field(min_length=1, max_length=50)
+    """
+    Ops edit of one ship-to. Only `b1_whs_code` and `is_active` are writable — the
+    address and GST fields are owned by `POST /ship-to/sync`. Those, plus the identity
+    fields, are accepted here so a GET -> edit -> PUT round-trip works, but changing
+    them is rejected rather than silently dropped.
+    """
+    id: uuid.UUID | None = None
+    trading_partner_id: uuid.UUID | None = None
+    partner_code: str | None = None
+    buyer_whs_code: str | None = None
+    mapping_status: str | None = None
+    # Sync-owned; accepted for round-trip, not writable here.
+    buyer_warehouse_name: str | None = None
+    address_line: str | None = None
+    address_type: list[str] | None = None
+    street: str | None = None
+    block: str | None = None
+    city: str | None = None
+    zip_code: str | None = None
+    state: str | None = None
+    country: str | None = None
+    gst_registration_no: str | None = None
+    gst_type: list[str] | None = None
+
+    b1_whs_code: str | None = Field(default=None, min_length=1, max_length=50)
     is_active: bool | None = None
+
+    model_config = {"extra": "forbid"}
 
 
 class ShipToMappingSyncItem(BaseModel):
-    """One ship-to / delivery-address record, e.g. from SAP CRD1 (BP addresses)."""
+    """One ship-to / delivery-address record (SAP CRD1 business-partner addresses)."""
+    # ── Accepted for GET -> sync round-trips; ignored, never written ──────────
+    id: uuid.UUID | None = None
+    trading_partner_id: uuid.UUID | None = None
+    b1_whs_code: str | None = None     # ops-owned mapping — set via PUT /ship-to/{id}
+    mapping_status: str | None = None
+    is_active: bool | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
     partner_code: str = Field(min_length=1, max_length=50)
     buyer_whs_code: str = Field(min_length=1, max_length=100)
     buyer_warehouse_name: str | None = None
@@ -439,6 +635,8 @@ class ShipToMappingSyncItem(BaseModel):
     gst_type: list[str] | None = None
 
 
+    model_config = {"extra": "forbid"}
+
 class ShipToMappingSyncRequest(BaseModel):
     mappings: list[ShipToMappingSyncItem] = Field(min_length=1, max_length=2000)
 
@@ -448,6 +646,66 @@ class MasterDataSyncResult(BaseModel):
     updated: int
     skipped: int
     errors: list[str] = []
+
+
+# ── Customer detail (drill-down) ───────────────────────────────────────────────
+# The Master Data UI is two tabs: Customers and Item Master. Expanding a customer
+# row loads this payload — its SKU mappings and ship-to addresses in one round trip,
+# rather than the ops user hunting across separate screens.
+
+class CustomerSkuMappingItem(BaseModel):
+    """SKU_Mapping row as shown under its parent customer."""
+    id: uuid.UUID
+    buyer_sku: str                       # buyerSKUCode
+    item_name: str | None                # itemName
+    b1_item_code: str                    # b1ItemCode -> Item_master.itemCode
+    unit_price: Decimal | None           # customer-specific negotiated price
+    margin: Decimal | None               # customer-specific
+    mrp: Decimal | None                  # joined from Item_master (item data, not per-customer)
+    qty_per_buyer_uom: Decimal | None
+    is_active: bool                      # status
+    created_at: datetime
+    updated_at: datetime
+
+
+class CustomerShipToItem(BaseModel):
+    """Ship_to_mapping row as shown under its parent customer."""
+    id: uuid.UUID
+    dc_code: str                         # dcCode / buyer_whs_code
+    warehouse_name: str | None
+    b1_whs_code: str | None
+    address: str | None                  # address
+    address_type: list[str] | None       # addressType[]
+    street: str | None
+    block: str | None
+    city: str | None
+    zip_code: str | None
+    state: str | None
+    country: str | None
+    gst_regn_no: str | None              # GSTRegnNO
+    gst_type: list[str] | None           # gstType[]
+    mapping_status: str
+    is_active: bool
+
+
+class CustomerDetailResponse(BaseModel):
+    """One customer plus its full SKU-mapping and ship-to arrays."""
+    id: uuid.UUID
+    code: str
+    name: str
+    source_channel: str
+    is_active: bool
+    gmail_label: str | None
+    b1_card_code: str | None
+    gstin: str | None
+    business_type: str | None
+    group_name: str | None
+    phone_numbers: list[str] | None
+    email_address: str | None
+    ack_sla_hours: int | None
+    created_at: datetime
+    sku_mappings: list[CustomerSkuMappingItem]
+    ship_to_mappings: list[CustomerShipToItem]
 
 
 # ── Inbox (raw messages / email PO view) ──────────────────────────────────────

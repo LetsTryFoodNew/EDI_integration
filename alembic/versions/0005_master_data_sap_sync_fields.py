@@ -1,23 +1,22 @@
 """0005 — master data: align with SAP sync schema (Customer/Item_master/SKU_Mapping/Ship_to_mapping)
 
-Adds fields needed so master data can be pushed FROM SAP (via POST /sync endpoints)
-instead of the middleware calling SAP's Service Layer on every read. GET endpoints
-then serve purely from these local tables.
+Adds the fields needed so master data can be pushed FROM SAP (via POST /sync endpoints)
+instead of the middleware calling SAP's Service Layer on every read. GET endpoints then
+serve purely from these local tables.
 
 trading_partners  — business_type, group_name, phone_numbers, email_address
-                     (gstin already existed but was never exposed via the API — now is)
+                    (gstin already existed but was never exposed via the API — now is)
 material_master   — itms_grp_cod, items_group_name, frgn_name, sales_uom,
-                     vat_group_purchase, vat_group_sales, frozen_for, lot_size, grammage
+                    vat_group_purchase, vat_group_sales, frozen_for, lot_size, grammage
 sku_mapping       — unit_price, margin (customer-specific negotiated price, for
-                     PriceVarianceRule in Phase 5)
-ship_to_mapping   — renamed buyer_warehouse_code -> buyer_whs_code (matches the
-                     column name every route/schema/frontend type already assumed —
-                     this mismatch meant GET/PATCH /api/master-data/ship-to 500'd
-                     before this migration), added is_active (also already assumed
-                     by the response schema but missing from the table), and the
-                     structured address + GSTIN fields needed for CGST/SGST vs IGST
-                     determination (see CLAUDE.md section 8 — GST split depends on
-                     the ship-to state, which we had nowhere to store).
+                    PriceVarianceRule in Phase 5)
+ship_to_mapping   — renamed buyer_warehouse_code -> buyer_whs_code (matches the column
+                    name every route/schema/frontend type already assumed — this mismatch
+                    meant GET/PATCH /api/master-data/ship-to 500'd), added is_active (also
+                    already assumed by the response schema but missing from the table), and
+                    the structured address + GSTIN fields needed for CGST/SGST vs IGST
+                    determination (see CLAUDE.md section 8 — the GST split depends on the
+                    ship-to state, which we previously had nowhere to store).
 
 Revision ID: 0005
 Revises: 0004

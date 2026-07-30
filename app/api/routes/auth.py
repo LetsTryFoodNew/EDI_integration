@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from jose import JWTError, jwt
 
 from app.api.deps import get_sync_db
-from app.schemas.api import LoginRequest, UserResponse
+from app.schemas.api import LoginRequest, LoginResponse, UserResponse
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -56,9 +56,23 @@ def create_access_token(email: str) -> str:
 
 
 def get_current_user_email(request: object) -> str:
-    """Extract and verify JWT from cookie. Raises 401 on failure."""
+    """
+    Extract and verify the JWT. Raises 401 on failure.
+
+    Two transports, same token:
+      - Authorization: Bearer <token>  — server-to-server callers (e.g. the SAP push).
+      - edi_token cookie               — the browser SPA.
+    The header wins when both are present.
+    """
     req: Request = request  # type: ignore[assignment]
-    token = req.cookies.get(_COOKIE_NAME)
+
+    token: str | None = None
+    auth_header = req.headers.get("authorization")
+    if auth_header and auth_header.lower().startswith("bearer "):
+        token = auth_header[7:].strip()
+    if not token:
+        token = req.cookies.get(_COOKIE_NAME)
+
     if not token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
     try:
@@ -98,7 +112,7 @@ def login(
     body: LoginRequest,
     response: Response,
     db: Session = Depends(get_sync_db),
-) -> UserResponse:
+) -> LoginResponse:
     from sqlalchemy import select
 
     from app.models.users import User
@@ -119,7 +133,12 @@ def login(
         max_age=_TOKEN_EXPIRE_HOURS * 3600,
     )
     log.info("auth.login", email=user.email)
-    return UserResponse.model_validate(user)
+    return LoginResponse(
+        user=UserResponse.model_validate(user),
+        access_token=token,
+        token_type="bearer",
+        expires_in=_TOKEN_EXPIRE_HOURS * 3600,
+    )
 
 
 @router.post("/logout")

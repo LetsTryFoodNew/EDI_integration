@@ -50,7 +50,7 @@ class CaseSizeRule(BaseRule):
                 severity="ERROR",
                 message=(
                     f"Line {line.line_number}: SKU '{line.buyer_sku}' "
-                    f"({material.b1_item_code}) ordered qty {qty} is not a multiple of "
+                    f"({material.item_code}) ordered qty {qty} is not a multiple of "
                     f"case size {case_size}. Nearest valid qty: {nearest}. "
                     f"Request {ctx.partner.name} to reissue the PO with a valid quantity."
                 ),

@@ -2,7 +2,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
 import apiClient from "@/lib/api-client";
-import type { User } from "@/types";
+import type { User, LoginResponse } from "@/types";
 
 const STORAGE_KEY = "edi_user";
 
@@ -29,9 +29,12 @@ async function fetchMe(): Promise<User | null> {
   }
 }
 
+// /auth/login returns { user, access_token, token_type, expires_in }. The SPA keeps
+// using the httpOnly cookie the same response also sets; access_token exists for
+// server-to-server callers (SAP) that send Authorization: Bearer instead.
 async function postLogin(email: string, password: string): Promise<User> {
-  const res = await apiClient.post<User>("/auth/login", { email, password });
-  return res.data;
+  const res = await apiClient.post<LoginResponse>("/auth/login", { email, password });
+  return res.data.user;
 }
 
 async function postLogout(): Promise<void> {
