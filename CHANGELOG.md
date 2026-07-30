@@ -1,5 +1,19 @@
 # Changelog
 
+## Phase 8 — CI fixes: UP038, duplicate route, and three broken model tests (2026-07-18)
+
+CI failed on the deployed commit. Fixing it surfaced a gap in how I had been verifying work all session.
+
+- **UP038** — `isinstance(detail, (dict, list))` → `isinstance(detail, dict | list)` in `app/api/error_handlers.py`.
+- **F811 duplicate `sync_sku_mappings`** in `app/api/routes/master_data.py` — present at lines 728 *and* 821 in commit `729673e` (what CI built), already resolved in the current commit. FastAPI matches the first registration, so the second was dead code rather than a behaviour change, which is why testing never caught it.
+- **Three `TestSkuMapping` integration tests fixed** — they still passed `mapping_status=` to `SkuMapping`, removed by migration `0009`, so they raised `TypeError` at construction. `test_unmapped_sku_no_material` was inverted into `test_material_id_is_required`: its premise (a mapping row with `material_id=None`) is exactly what `0009` made impossible, so the test now asserts the database rejects it.
+
+**Root cause of missing UP038 locally: a ruff version mismatch.** `pyproject.toml` pins `ruff==0.8.4` for CI; the local binary is `0.15.20`, where UP038 has since been removed. Every "ruff clean" reported this session was from the newer, more permissive version. Verification now runs the pinned version from a dedicated venv, which reproduces CI exactly.
+
+**The integration tests had also never been run locally** — they need a Postgres on `localhost:5433` with the credentials CI's service container provides, which does not exist here. Ran them by creating the test database, forwarding the port into the API container, and patching the connection string in a throwaway copy (the repo file is unchanged). That is what exposed the three failures.
+
+Full CI parity now green: `ruff check app/` (0.8.4) clean, 177 unit + 17 integration tests pass, `npm run typecheck` / `lint` / `test` / `build` all pass.
+
 ## Phase 8 — SAP master-data API document rebuilt (v2.0) (2026-07-18)
 
 `docs/sap-master-data-api.md` rewritten from the live contract rather than patched further. The v1 document had accumulated eight rounds of changes and no longer matched the API: it predated `POST /partners`, `PUT /materials/{id}`, the round-trip tolerance, the error envelope, and the batch-wrapper rules.
