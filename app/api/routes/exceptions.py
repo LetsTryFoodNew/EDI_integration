@@ -53,33 +53,6 @@ class ResolveIssueRequest(BaseModel):
     resolution_notes: str = ""
 
 
-class SkuMappingIn(BaseModel):
-    trading_partner_id: uuid.UUID
-    buyer_sku: str
-    buyer_sku_description: str | None = None
-    material_id: uuid.UUID | None = None
-    b1_item_code: str | None = None     # alternative to material_id — looked up
-    qty_per_buyer_uom: float = 1.0
-    buyer_uom: str | None = None
-    notes: str | None = None
-
-
-class SkuMappingOut(BaseModel):
-    id: uuid.UUID
-    trading_partner_id: uuid.UUID
-    buyer_sku: str
-    buyer_sku_description: str | None
-    material_id: uuid.UUID | None
-    b1_item_code: str | None
-    qty_per_buyer_uom: float
-    mapping_status: str
-    confidence_score: float | None
-    notes: str | None
-    updated_at: datetime
-
-    model_config = {"from_attributes": True}
-
-
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @router.get("/exceptions", response_model=ExceptionsPage)
@@ -161,146 +134,13 @@ def resolve_exception(
     return ValidationIssueOut.model_validate(issue)
 
 
-@router.post("/sku-mapping", response_model=SkuMappingOut, status_code=201)
-def upsert_sku_mapping(
-    body: SkuMappingIn,
-    db: Session = Depends(get_sync_db),  # noqa: B008
-) -> Any:
-    """
-    Create or update a manual SKU mapping.
-
-    If a mapping for (trading_partner_id, buyer_sku) already exists it is updated
-    in-place and its status is set to MANUALLY_MAPPED.
-    """
-    from sqlalchemy import select
-
-    from app.models._enums import MappingStatus
-    from app.models.master_data import MaterialMaster, SkuMapping
-
-    # Resolve material_id from b1_item_code if provided
-    material_id = body.material_id
-    if material_id is None and body.b1_item_code:
-        mat = db.execute(
-            select(MaterialMaster).where(MaterialMaster.b1_item_code == body.b1_item_code)
-        ).scalar_one_or_none()
-        if not mat:
-            raise HTTPException(
-                status_code=422,
-                detail=f"MaterialMaster with b1_item_code='{body.b1_item_code}' not found",
-            )
-        material_id = mat.id
-
-    existing = db.execute(
-        select(SkuMapping).where(
-            SkuMapping.trading_partner_id == body.trading_partner_id,
-            SkuMapping.buyer_sku == body.buyer_sku,
-            SkuMapping.deleted_at.is_(None),
-        )
-    ).scalar_one_or_none()
-
-    if existing:
-        existing.buyer_sku_description = body.buyer_sku_description or existing.buyer_sku_description
-        existing.material_id = material_id
-        existing.qty_per_buyer_uom = body.qty_per_buyer_uom
-        existing.buyer_uom = body.buyer_uom or existing.buyer_uom
-        existing.mapping_status = MappingStatus.MANUALLY_MAPPED
-        existing.confidence_score = None
-        existing.notes = body.notes or existing.notes
-        db.commit()
-        db.refresh(existing)
-        mapping = existing
-    else:
-        mapping = SkuMapping(
-            trading_partner_id=body.trading_partner_id,
-            buyer_sku=body.buyer_sku,
-            buyer_sku_description=body.buyer_sku_description,
-            material_id=material_id,
-            qty_per_buyer_uom=body.qty_per_buyer_uom,
-            buyer_uom=body.buyer_uom,
-            mapping_status=MappingStatus.MANUALLY_MAPPED,
-            notes=body.notes,
-        )
-        db.add(mapping)
-        db.commit()
-        db.refresh(mapping)
-
-    # Resolve b1_item_code for the response
-    b1_code: str | None = None
-    if mapping.material_id:
-        mat_row = db.get(MaterialMaster, mapping.material_id)
-        if mat_row:
-            b1_code = mat_row.b1_item_code
-
-    log.info(
-        "sku_mapping.upserted",
-        buyer_sku=body.buyer_sku,
-        partner_id=str(body.trading_partner_id),
-        material_id=str(material_id),
-    )
-
-    return SkuMappingOut(
-        id=mapping.id,
-        trading_partner_id=mapping.trading_partner_id,
-        buyer_sku=mapping.buyer_sku,
-        buyer_sku_description=mapping.buyer_sku_description,
-        material_id=mapping.material_id,
-        b1_item_code=b1_code,
-        qty_per_buyer_uom=float(mapping.qty_per_buyer_uom),
-        mapping_status=str(mapping.mapping_status),
-        confidence_score=float(mapping.confidence_score) if mapping.confidence_score else None,
-        notes=mapping.notes,
-        updated_at=mapping.updated_at,
-    )
-
-
-@router.get("/sku-mapping", response_model=list[SkuMappingOut])
-def list_sku_mappings(
-    partner_code: str | None = Query(None),
-    status: str | None = Query(None, description="UNMAPPED / AUTO_MAPPED / MANUALLY_MAPPED"),
-    limit: int = Query(100, ge=1, le=500),
-    offset: int = Query(0, ge=0),
-    db: Session = Depends(get_sync_db),  # noqa: B008
-) -> Any:
-    """List SKU mappings, optionally filtered by partner or mapping_status."""
-    from sqlalchemy import select
-
-    from app.models._enums import MappingStatus
-    from app.models.master_data import MaterialMaster, SkuMapping, TradingPartner
-
-    q = select(SkuMapping).where(SkuMapping.deleted_at.is_(None))
-
-    if partner_code:
-        q = (
-            q.join(TradingPartner, SkuMapping.trading_partner_id == TradingPartner.id)
-            .where(TradingPartner.code == partner_code.upper())
-        )
-
-    if status:
-        try:
-            q = q.where(SkuMapping.mapping_status == MappingStatus(status.upper()))
-        except ValueError as err:
-            raise HTTPException(status_code=422, detail=f"Invalid status value: {status}") from err
-
-    rows = db.execute(q.offset(offset).limit(limit)).scalars().all()
-
-    out: list[SkuMappingOut] = []
-    for m in rows:
-        b1_code: str | None = None
-        if m.material_id:
-            mat = db.get(MaterialMaster, m.material_id)
-            if mat:
-                b1_code = mat.b1_item_code
-        out.append(SkuMappingOut(
-            id=m.id,
-            trading_partner_id=m.trading_partner_id,
-            buyer_sku=m.buyer_sku,
-            buyer_sku_description=m.buyer_sku_description,
-            material_id=m.material_id,
-            b1_item_code=b1_code,
-            qty_per_buyer_uom=float(m.qty_per_buyer_uom),
-            mapping_status=str(m.mapping_status),
-            confidence_score=float(m.confidence_score) if m.confidence_score else None,
-            notes=m.notes,
-            updated_at=m.updated_at,
-        ))
-    return out
+# NOTE: POST /sku-mapping and GET /sku-mapping were removed here.
+#
+# SAP is the sole author of SKU_Mapping — b1ItemCode is not-null, so every row is a
+# confirmed mapping and there is nothing for ops to create or correct locally. Letting
+# ops write a mapping the next sync would overwrite (or silently preserve) is exactly
+# the drift this design avoids.
+#
+# A PO line with no mapping surfaces as E002_SKU_UNRESOLVED in the exception list above;
+# the fix is to add it in SAP, re-sync master data, then retry the PO.
+# Read-only listing now lives at GET /api/master-data/sku-mappings.

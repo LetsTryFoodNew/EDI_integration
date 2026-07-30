@@ -92,12 +92,12 @@ def partner(session: Session) -> TradingPartner:
 def material(session: Session) -> MaterialMaster:
     m = MaterialMaster(
         id=uuid.uuid4(),
-        b1_item_code="LTFM001",
-        description="Peri Peri Makhana 30g",
-        hsn_code="20089900",
-        gst_rate=12.0,
-        uom="PCS",
-        is_active=True,
+        item_code="LTFM001",
+        item_name="Peri Peri Makhana 30g",
+        hsn="20089900",
+        tax_rate=12.0,
+        invntry_uom="PCS",
+        valid_for=True,
     )
     session.add(m)
     session.flush()
@@ -220,7 +220,7 @@ class TestShipToMapping:
         s = ShipToMapping(
             id=uuid.uuid4(),
             trading_partner_id=partner.id,
-            buyer_warehouse_code="BL-MUM-001",
+            buyer_whs_code="BL-MUM-001",
             buyer_warehouse_name="Blinkit Mumbai DC",
             b1_whs_code="WH01",
             mapping_status=MappingStatus.MANUALLY_MAPPED,

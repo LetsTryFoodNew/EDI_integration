@@ -194,9 +194,7 @@ def get_po(
                 igst_amount=line.igst_amount,
                 hsn_code=line.hsn_code,
                 sap_material_no=line.sap_material_no,
-                mapping_status=(
-                    str(line.sku_mapping.mapping_status) if line.sku_mapping else None
-                ),
+                mapping_status="MAPPED" if line.sap_material_no else "UNRESOLVED",
             )
             for line in lines
         ],

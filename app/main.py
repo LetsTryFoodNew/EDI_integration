@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from app.api.error_handlers import register_error_handlers
 from app.api.middleware import AuditMiddleware
 from app.api.routes.api_inbox import router as api_inbox_router
 from app.api.routes.auth import router as auth_router
@@ -43,6 +44,9 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
 )
+
+# Consistent, actionable error envelope for every failure (see app/api/error_handlers.py).
+register_error_handlers(app)
 
 app.add_middleware(AuditMiddleware)
 app.add_middleware(

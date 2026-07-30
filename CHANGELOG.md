@@ -1,5 +1,144 @@
 # Changelog
 
+## Phase 8 — SAP master-data API document rebuilt (v2.0) (2026-07-18)
+
+`docs/sap-master-data-api.md` rewritten from the live contract rather than patched further. The v1 document had accumulated eight rounds of changes and no longer matched the API: it predated `POST /partners`, `PUT /materials/{id}`, the round-trip tolerance, the error envelope, and the batch-wrapper rules.
+
+Rebuilt against the running instance's OpenAPI schema, covering all 14 master-data endpoints:
+
+- **§5 Rules that apply everywhere** — Content-Type, batch wrappers per endpoint, "a 200 does not mean every row was accepted", snake_case + unknown-field rejection, sync-is-not-a-mirror, GET→POST round-tripping, and the type conventions (decimals as strings, leading zeros as strings, booleans not Y/N).
+- **§6 Errors** — the single envelope, indexed field paths (`mappings[1].b1_item_code`) for locating a failing row inside a 2000-row batch, and the full status/code table.
+- **§7–10** — one section per table: create/update/read, full field tables with types and requiredness, and the rules that bite (customer sync being update-only, Item Master before SKU Mapping, `frozen_for`/`valid_for` always overwritten, `state` driving the CGST/SGST-vs-IGST split, sync never touching `b1_whs_code`).
+- **§11 sequence** and **§12 smoke test**, including two negative tests whose failure would indicate the safety checks are broken.
+
+Verified before publishing: every field in `TradingPartnerCreate`, `TradingPartnerSyncItem`, `MaterialMasterSyncItem`, `SkuMappingSyncItem` and `ShipToMappingSyncItem` cross-checked against the live OpenAPI schema (all present, all required fields documented), and the full create→sync→items→mappings→ship-to→verify sequence executed end to end on a throwaway `DOCDEMO` partner, with both rejection paths confirmed. Test data cleaned up.
+
+Still to fill before sending: the staging/production hosts in §2 and the service-account credentials in §3.
+
+## Phase 8 — source_channel is editable on PUT /partners/{id} (2026-07-18)
+
+`source_channel` was locked as immutable on the grounds that changing it "would re-point every PO, raw message and mapping attached to this partner." **That justification was wrong.** `raw_messages` carries its own `source_channel`, stamped at ingestion — verified against live data (182 DMART, 372 SWIGGY, 4 ZEPTO rows, each storing its own value independently of the partner). Changing a partner's channel rewrites no history; it governs future routing only.
+
+The lock also contradicted the onboarding flow added one step earlier: `POST /partners` deliberately defaults to `MANUAL` so a new partner sits inert, and the documented next step is switching it to a live channel — which the PUT then refused.
+
+- `source_channel` now editable on `PUT /partners/{id}`, validated against the enum (`422` listing allowed values on a bad one).
+- `code` and `id` remain immutable, with a corrected reason: `code` is embedded in the webhook URL, is SAP's sync match key, and files every stored document.
+- PUT now returns the same `warnings` array as create (missing parser, `EMAIL` without `gmail_label`, `WEBHOOK` without `webhook_secret`, inert `MANUAL`), via a shared `_partner_write_response()` so the two endpoints cannot drift. `TradingPartnerCreateResponse` renamed `TradingPartnerWriteResponse`.
+- `webhook_secret` and `asn_sla_hours` added to the updatable set — both were previously unreachable, so a WEBHOOK partner could never be given its secret through the API.
+
+Verified: the reported payload returns 200 with `source_channel: "API"`; switching to `EMAIL` without a label warns; `FTP` returns 422; a `code` change still 409s; and raw_message channel counts are unchanged after two channel switches. Doc §10.0 added.
+
+## Phase 8 — POST /partners: partner onboarding endpoint (2026-07-18)
+
+Partners could only be created by editing `scripts/seed_master_data.py` or inserting a row by hand — there was no API path at all, so `POST /partners/sync` (update-only) reported `skipped` for anything new and there was nowhere to go from there.
+
+- **`POST /api/master-data/partners`** — creates a partner; `code` + `name` required, everything else optional. Returns **201** with the row and a `warnings` array. `409` if the code exists (pointing at the PUT), `422` on an invalid `source_channel` listing the allowed values.
+- **Sync stays update-only.** Kept deliberately: SAP's customer list is mostly not EDI trading partners, so a bulk push must never mass-create rows here. Creating one is an explicit, per-partner act — which is the carve-out CLAUDE.md's "never invent partners" rule was really aimed at.
+- **`source_channel` defaults to `MANUAL`**, the only inert state: the scheduler polls `API` partners and `EMAIL` partners *with* a `gmail_label`, so a `MANUAL` partner takes master data without generating failed polls. Verified `_get_api_partners()` / `_get_email_partners()` both exclude a freshly created partner.
+- **`warnings` closes the gap between "row exists" and "POs flow"** — flags a missing parser for that code, `EMAIL` without a `gmail_label`, `WEBHOOK` without a `webhook_secret`, and the inert `MANUAL` state. Without this, a created partner looks ready when nothing can actually read its documents.
+
+Verified end to end: create `BIGBAZARJIO` → 201 with both warnings; `POST /partners/sync` on the same code → `updated: 1` (was `skipped: 1`); SAP's name, CardCode and email all landed. Doc §6.0 added.
+
+## Phase 8 — Sync endpoints accept round-trip payloads (2026-07-18)
+
+Posting a record straight back from its `GET` response failed on every sync endpoint: the GET shapes are wider than the sync schemas, and `extra="forbid"` rejected the difference. Reported against `/partners/sync`, where a payload copied from `GET /partners` produced five "unknown field" errors for `source_channel`, `gmail_label`, `ack_sla_hours`, `created_at` and `is_active`.
+
+- All four sync item schemas now accept the keys their GET counterpart returns (`id`, `trading_partner_id`, timestamps, plus per-table extras). They are **dropped before any write** via `_SYNC_READ_ONLY` / `_SHIP_TO_READ_ONLY`, so sync still cannot touch integration config or the ops-owned `b1_whs_code` / `mapping_status`. Verified: posting `b1_whs_code: "HACKED"` through `/ship-to/sync` leaves the stored value at `WH02`.
+- `is_active` accepted as an alias of `status` (`status` wins when both are sent). `status` became nullable so an omitted value is distinguishable from an explicit `false`.
+- Batch-wrapper hint added to the validation handler: posting a bare record to a `/sync` endpoint previously reported only *"field 'mappings' is missing"*, which never said the body needs wrapping. Now returns the exact wrapper for that endpoint. Fires only when the body is genuinely an unwrapped record — a real missing field inside a correct batch still reports `mappings[0].b1_item_code` with the normal hint.
+
+**Bug caught during this change:** widening the schemas meant `item.model_dump()` in the materials and ship-to sync loops would have `setattr`'d the new keys — letting a sync overwrite `id`, `b1_whs_code` and `mapping_status`, the exact thing those endpoints are designed to protect. Excluded explicitly before the write.
+
+## Phase 8 — PUT endpoints accept round-trip payloads (2026-07-18)
+
+`PUT /materials/{id}` rejected `item_code` outright, which broke the ordinary GET → edit → PUT flow: a client sending back the object it just read got *"unknown field — check the spelling"* for a field that is neither unknown nor misspelled. The immutability rule was right; enforcing it by rejecting the field's mere presence was not.
+
+- **Identity and read-only fields are now accepted on all three PUTs and ignored when unchanged**, so round-tripping works. Changing one returns `409 IMMUTABLE_FIELD` with `sent` vs `current` and the reason — never a silent discard, which would look like a successful edit that did nothing.
+- Applied consistently, because the three PUTs previously disagreed: materials errored on extra fields while partners and ship-to **silently ignored** them (no `extra="forbid"`). All three now: accept identity fields, reject genuine typos, reject real changes to immutable fields.
+- Ship-to additionally guards the sync-owned address/GST block — those come from `POST /ship-to/sync`, so changing `city` here returns `409` pointing at SAP rather than dropping the edit. `b1_whs_code` became optional so a partial update is possible.
+- **Found while testing:** the same data has different field names depending on the endpoint — `GET /ship-to` returns `address_line`/`gst_registration_no`/`buyer_warehouse_name`, while the nested array in `GET /partners/{id}` calls them `address`/`gst_regn_no`/`warehouse_name`. I had built the update schema from the nested names, so the round-trip 422'd. Aligned to the `GET /ship-to` names. The underlying inconsistency remains and is worth unifying.
+- Error handler renders structured `HTTPException(detail={...})` into `details` instead of `str()`-ing a Python dict into the message.
+
+## Phase 8 — PUT /materials/{id} (2026-07-18)
+
+- **`PUT /api/master-data/materials/{material_id}`** — partial edit of one item; only the fields sent are written. Accepts every field from the sync schema **except `item_code`**, which is deliberately immutable: it is the natural key SAP syncs on and the target of every SKU mapping's `b1ItemCode`, so editing it would orphan those rows. Retire with `valid_for: false` and create a replacement instead. Audit-logged with `mode="json"` so Decimal fields cannot break the JSONB write.
+- Errors: unknown id → `404 NOT_FOUND`; `{}` → `422` "No fields to update"; any unknown key (including `item_code`) → `422` naming it. Added `400` and `422` to the error handler's code map so a route-raised 422 reports `VALIDATION_ERROR` rather than the generic `HTTP_ERROR`.
+- **SKU mappings still have no PUT** — unchanged from the earlier decision that SAP is their sole author.
+- Frontend: removed `updateSkuMapping()`, which was dead code still pointing at the removed `PUT /sku-mappings/{id}` (a 404 waiting to happen); added `updateItem()`.
+
+Master-data write surface is now: `POST .../sync` (bulk upsert, all four tables) plus single-record `POST`/`PUT` on materials and `PUT` on partners and ship-to. Doc §10 rewritten accordingly.
+
+## Phase 8 — Global error handlers + three POST /materials bugs (2026-07-18)
+
+Triggered by a Postman 422 (`"Input should be a valid dictionary or object to extract fields from"`) that never mentioned its own cause. Reproducing it uncovered that the endpoint was broken three ways underneath.
+
+- **`app/api/error_handlers.py`** (new) — one envelope for every failure: `{error: {code, message, details[], hint, request_id}}`.
+  - `RequestValidationError` — detects the body-arrived-as-text case and returns **415** naming `Content-Type` explicitly, with the Postman fix in `hint`, instead of a pydantic message that never mentions headers. Field errors render as `mappings[1].b1_item_code` so a failing row is identifiable inside a 2000-row batch, with a plain-English `problem` per pydantic error type and the offending input echoed back (truncated at 200 chars).
+  - `IntegrityError` → **409**, distinguishing unique violations from FK violations and pointing at the sync ordering.
+  - `StarletteHTTPException` → same envelope; 401 explains the Bearer header and 8-hour expiry.
+  - Catch-all `Exception` → **500** with a `request_id`; the traceback is logged server-side and never returned, so internal paths and SQL cannot leak.
+- **Unknown fields now rejected** (`extra="forbid"`) on all SAP-facing request models. `itemCode` instead of `item_code` was previously accepted and silently ignored — an integration could appear to succeed while writing nothing.
+
+**Three pre-existing bugs in `POST /api/master-data/materials`, all masked by the Content-Type error:**
+
+1. `create_material` still referenced `body.b1_item_code` after the rename to `item_code` — **the endpoint returned 500 for every request**. Same class as the two `master_data.py` misses fixed earlier; this one was in the request-schema path rather than the ORM path.
+2. `MaterialMasterCreate` exposed only 4 of 18 Item_master fields, so `tax_rate`, `mrp`, `ean_code`, `case_size` and the rest were **silently dropped** — a caller sending the documented payload would have created a half-empty item and seen 201. Now mirrors the full field set.
+3. Widening it then exposed a latent bug: `audit_log.payload` is JSONB and `model_dump()` emits `Decimal`, which is not JSON-serializable — the insert failed. Both audit payloads now use `model_dump(mode="json")`, so adding Decimal fields to a schema can never break the audit write again.
+
+Verified against the reported payload: wrong Content-Type → actionable 415; correct Content-Type → 201 with all 18 fields persisted; duplicate → 409; missing field → 422 naming it; camelCase typo → 422 listing each unknown key; batch error → indexed path. Doc §5.3–5.5 updated with the real responses.
+
+## Phase 8 — SAP master-data API doc + Bearer token auth (2026-07-18)
+
+- **`docs/sap-master-data-api.md`** — integration guide for the SAP B1 team covering all four master-data tables: auth, endpoint reference, per-field tables mapped to the schema's own names (`customerCode`, `itemCode`, `buyerSKUCode`, `dcCode`…), example payloads, sync-result semantics, error codes, ordering constraints, and a copy-paste smoke test. Every request example in it was executed against the running API and the documented responses are actual output, not illustrative.
+- **Bearer token auth added** (`app/api/routes/auth.py`). Auth was cookie-only: `POST /auth/login` set an httpOnly `edi_token` cookie and `get_current_user_email` read `request.cookies` exclusively. Workable for the browser SPA, but it forced any server-to-server caller to scrape `Set-Cookie` and replay it, re-authenticating every 8 hours. Login now also returns `access_token` in the body and the auth dependency accepts `Authorization: Bearer <token>`, header taking precedence. The cookie path is untouched, so the SPA is unaffected — `postLogin` just unwraps `.user` from the new `LoginResponse`.
+- Verified with the cookie jar removed entirely: all four master-data GETs plus `/auth/me` return 200 on Bearer alone, no-auth returns 401, and a real `POST /materials/sync` succeeds over Bearer.
+
+**Documented as an open question for SAP, not silently assumed:** whether a multi-state retailer is one Business Partner or one per state GSTIN. `trading_partners.b1_card_code` is a single column and assumes the former; if SAP uses the latter the CardCode has to move onto `ship_to_mapping` and be chosen per PO from the delivery state. Raised in §14 of the doc.
+
+## Phase 5/8 — SKU_Mapping is SAP-owned; auto-mapping removed (2026-07-18)
+
+`b1ItemCode [not null]` in the master-data schema means every SKU_Mapping row is a confirmed mapping by construction. Reshaped the system around that.
+
+- Migration `0009` — dropped `sku_mapping.mapping_status` and `confidence_score`; `material_id` is now `NOT NULL`. Rows with a null material_id (created by the old sync) were deleted, with referencing PO lines detached first so the FK could not cascade into transactional data.
+- **Auto-mapping deleted** from `SkuMappingRule`: the cross-partner EAN reuse and the `rapidfuzz` fuzzy-description match (≥0.85) are gone. A 0.86 match between "Salted Almonds 100g" and "Salted Cashews 100g" would have posted a Sales Order for the wrong product. The rule is now exact lookup → `E002_SKU_UNRESOLVED` if absent. CLAUDE.md Phase 5 §4–5 rewritten to match.
+- **No local writes**: removed `PUT /api/master-data/sku-mappings/{id}` and `POST|GET /api/sku-mapping` (exceptions). An unresolved SKU is fixed in SAP and re-synced, so a later sync cannot overwrite an ops edit. Read-only listing lives at `GET /api/master-data/sku-mappings`.
+- `POST /sku-mappings/sync` now **requires `b1_item_code`** and rejects any row whose item code is absent from Item_master, rather than storing it half-resolved — the schema marks that ref *"no cascade — fail loud on unmapped item"*. Verified: both reject paths fire (`unknown partner code`, `item 'NO_SUCH_ITEM' not in Item_master`).
+- SKU views now carry `created_at`, `updated_at` and **`mrp` joined from Item_master** (item data, not customer-specific). Inner join, since `material_id` is non-null.
+
+**Three bugs found by loading real test data — all pre-existing, none caught by lint or typecheck:**
+
+1. `master_data.py:440` — `row.b1_item_code` on a SELECT aliasing `item_code`: **`GET /sku-mappings` returned 500**, SKU list entirely broken.
+2. `master_data.py:491` — `material.b1_item_code` ORM attribute: `PUT /sku-mappings/{id}` would have crashed on every save. Only reachable after fixing #1.
+3. `dashboard.py` — `EdiPoLineItem.mapping_status` *and* `.description`, neither of which exists: **`GET /api/dashboard/unmapped-skus` had never worked** (the Dashboard's "Unmapped SKUs" card). Now queries `sap_material_no IS NULL` against the real column names and returns 52 unresolved SKUs.
+
+**`npm run typecheck` was a no-op.** `tsconfig.json` uses `"files": []` with project references, so `tsc --noEmit` checked **zero files** — every "typecheck clean" reported during this work was vacuous. Switched the script to `tsc -b --force` (what `npm run build` already used); it immediately caught a stale test fixture. CLAUDE.md's "Definition of Done" cites `npm run typecheck`, which now actually checks.
+
+## Phase 8 — Master Data rebuilt against the Customer/Item_master schema (2026-07-18)
+
+**Data reset.** Catalogue tables cleared and reloaded: `material_master` (186 rows), `sku_mapping` (700), `ship_to_mapping` (5). `trading_partners` (15) and all transactional data were **kept** — `edi_purchase_orders` (549), `edi_po_line_items` (8,001) and `raw_messages` (549) all FK into master data, so a blanket delete would have destroyed them. 7,535 line items had `sku_mapping_id` nulled first so they survive as unmapped and re-resolve against the new catalogue. Pre-wipe dump saved to `_backups/master_data_before_wipe_*.sql`.
+
+**Repo↔DB consistency repair.** The DB was stamped at revision `0005` while the `0005` migration file was missing from the repo (lost in a revert), leaving the ORM on `buyer_warehouse_code` and Postgres on `buyer_whs_code` — the ship-to code paths were broken and `alembic downgrade` could not run. Migration `0005` recreated to match the applied schema exactly.
+
+**Schema now mirrors the master-data diagram.**
+- `0005` — `trading_partners` + `business_type`/`group_name`/`phone_numbers[]`/`email_address`; `material_master` + the OITM columns; `sku_mapping` + `unit_price`/`margin`; `ship_to_mapping` renamed `buyer_warehouse_code`→`buyer_whs_code`, + `is_active` and the structured address/GSTIN block (`state` drives CGST/SGST vs IGST, CLAUDE.md §8, and previously had nowhere to live).
+- `0006` — `sku_mapping.is_active` (the schema's `status`), kept distinct from `deleted_at` and `mapping_status` since the three mean different things.
+- `0007` — `material_master` renamed to mirror `Item_master` 1:1: `b1_item_code`→`item_code`, `description`→`item_name`, `uom`→`invntry_uom`, `sales_uom`→`sal_unit_msr`, `vat_group_purchase`→`vat_group_pu`, `vat_group_sales`→`vat_group_sa`, `gst_rate`→`tax_rate`, `hsn_code`→`hsn`, `ean`→`ean_code`, `is_active`→`valid_for`. All call sites updated (validators, exceptions route, mappers, seed + import scripts, tests). `uom_group` and `case_size` deliberately retained — not in the diagram but they back the UoM conversion and `CaseSizeRule` respectively.
+- `0008` — index on `sku_mapping.material_id`, the equivalent of the schema's `SKU_Mapping.b1ItemCode` index (we model that reference as a UUID FK, not a varchar code). Backs the customer drill-down join, which runs on every row expand.
+- Deliberately **not** added, per review: `SKU_Mapping.partnerName` (derivable from the customer join) and a second `Item_master.status` alongside `validFor` (collapsed into `valid_for`).
+- **FKs deliberately left `NO ACTION`** rather than the `ON DELETE CASCADE` the diagram specifies. Every one of these tables uses `deleted_at` soft-delete (CLAUDE.md §4 "never hard-delete"), so a hard `DELETE` never fires and the cascade would be dead code — while making an accidental hard delete destroy `sku_mapping` rows that `edi_po_line_items` still references.
+
+**Master Data UI rebuilt — two tabs instead of four.**
+- **Customers / Partners** — one row per customer showing customerCode/Name/BusinessType/Group/Email/Channel/Status. Expanding a row calls the new `GET /api/master-data/partners/{id}` and shows that customer's **SKU Mappings** and **Ship-to Addresses** arrays in sub-tabs (one round trip, not two screens).
+- **Item Master** — full OITM grid using the schema's field names.
+- Old 4-tab layout and its `SkuMappingsTab.test.tsx` removed; replaced with `MasterDataPage.test.tsx` covering both tabs and the drill-down.
+- Fixed: frontend was calling `/api/master-data/ship-to-mappings` while the route is `/ship-to` — that tab was silently 404ing. Update verbs switched PATCH→PUT.
+
+**SAP-push sync endpoints** (`POST .../sync` for partners/materials/sku-mappings/ship-to) so SAP pushes master data in rather than the middleware querying Service Layer on every read (sessions are licensed and capped, CLAUDE.md §7). Sync and manual PUT write disjoint field sets, so a sync never clobbers an ops mapping decision (`material_id`, `mapping_status`, `b1_whs_code`). Partner sync is update-only — unknown codes are skipped and reported, since onboarding needs a `source_channel` decision SAP cannot express.
+
+Verified: `0005`→`0007` upgrade/downgrade/upgrade clean; seed reloaded; `GET /materials`, `GET /partners`, `GET /partners/{id}` (5 SKU mappings + 2 ship-to addresses) all returning the schema's field names; `ruff` clean on every changed file; `tsc --noEmit` and `oxlint` clean.
+
+Frontend tests pass: **3 files / 12 tests in 3.5s**, including the new `MasterDataPage.test.tsx` (two-tab layout, customer drill-down loading SKU + ship-to arrays, Item_master field names). Note for anyone hitting this later: vitest's *first* run in a fresh checkout has to build its transform cache and can take ~30 minutes, during which short-bounded runs die at vitest's own 60s worker-startup timeout and print "Failed to start forks worker" — that is a cold-cache artifact, not a broken suite. Subsequent runs are seconds.
+
 ## Phase 0 — CI/CD Deploy Fixes (2026-07-27)
 - `pyproject.toml` — removed `types-bcrypt==4.0.0.20240106` dev dependency; the package doesn't exist on PyPI and was breaking `pip install -e ".[dev]"` in CI. `bcrypt` ships its own inline types, so no stub package is needed.
 - `docker-compose.yml` — removed public port mappings on `postgres` (`5433:5432`) and `redis` (`6379:6379`); both are only reached by other containers over the internal Docker network and had no reason to be exposed on the VPS host.

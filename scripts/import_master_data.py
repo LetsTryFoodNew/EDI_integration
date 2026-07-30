@@ -14,7 +14,7 @@ Source files (docs/):
     SAP ALTERNATE CODE | MRP | Discount | GST RATE | UNIT COAST
 
 Behaviour (idempotent — safe to re-run):
-  - MaterialMaster upserted by b1_item_code; rows absent from the file are
+  - MaterialMaster upserted by item_code; rows absent from the file are
     soft-deleted (dummy seed data disappears this way).
   - SkuMapping upserted by (partner, buyer_sku) as MANUALLY_MAPPED.
   - Mapping rows whose SAP ITEM CODE is '#N/A' get material_id=None and
@@ -102,7 +102,7 @@ def import_materials(session, items: list[dict[str, object]]) -> tuple[int, int,
     """Upsert MaterialMaster rows; soft-delete anything not in the file."""
     now = datetime.now(UTC)
     existing = {
-        m.b1_item_code: m
+        m.item_code: m
         for m in session.execute(select(MaterialMaster)).scalars().all()
     }
     created = updated = 0
@@ -113,23 +113,23 @@ def import_materials(session, items: list[dict[str, object]]) -> tuple[int, int,
         mat = existing.get(code)
         if mat is None:
             session.add(MaterialMaster(
-                b1_item_code=code,
-                description=item["description"],
-                hsn_code=item["hsn_code"],
-                uom="EA",
+                item_code=code,
+                item_name=item["description"],
+                hsn=item["hsn_code"],
+                invntry_uom="EA",
                 case_size=item["case_size"],
-                ean=item["ean"],
+                ean_code=item["ean"],
                 mrp=item["mrp"],
-                is_active=item["is_active"],
+                valid_for=item["is_active"],
             ))
             created += 1
         else:
-            mat.description = item["description"]
-            mat.hsn_code = item["hsn_code"]
+            mat.item_name = item["description"]
+            mat.hsn = item["hsn_code"]
             mat.case_size = item["case_size"]
-            mat.ean = item["ean"]
+            mat.ean_code = item["ean"]
             mat.mrp = item["mrp"]
-            mat.is_active = item["is_active"]
+            mat.valid_for = item["is_active"]
             mat.deleted_at = None
             updated += 1
 
@@ -137,7 +137,7 @@ def import_materials(session, items: list[dict[str, object]]) -> tuple[int, int,
     for code, mat in existing.items():
         if code not in file_codes and mat.deleted_at is None:
             mat.deleted_at = now
-            mat.is_active = False
+            mat.valid_for = False
             removed += 1
     session.flush()
     return created, updated, removed
@@ -150,7 +150,7 @@ def import_mappings(session, mappings: list[dict[str, object]]) -> tuple[int, in
         for p in session.execute(select(TradingPartner)).scalars().all()
     }
     materials = {
-        m.b1_item_code: m
+        m.item_code: m
         for m in session.execute(
             select(MaterialMaster).where(MaterialMaster.deleted_at.is_(None))
         ).scalars().all()
@@ -179,8 +179,8 @@ def import_mappings(session, mappings: list[dict[str, object]]) -> tuple[int, in
         else:
             status = MappingStatus.MANUALLY_MAPPED
             notes = "Imported from Mapping.xlsx"
-            if material.gst_rate is None and row["gst_rate"] is not None:
-                material.gst_rate = row["gst_rate"]
+            if material.tax_rate is None and row["gst_rate"] is not None:
+                material.tax_rate = row["gst_rate"]
 
         key = (partner.id, row["buyer_sku"])
         sm = existing.get(key)

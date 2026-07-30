@@ -1,9 +1,8 @@
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
-import { Loader2, Save } from "lucide-react";
+import { Fragment, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { ChevronDown, ChevronRight, Package, Users } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
   Table,
@@ -14,328 +13,416 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { useToast } from "@/hooks/use-toast";
 import { TableSkeleton } from "@/components/shared/LoadingSkeleton";
 import EmptyState from "@/components/shared/EmptyState";
-import {
-  fetchPartners,
-  fetchMaterials,
-  fetchSkuMappings,
-  fetchShipToMappings,
-  updateSkuMapping,
-  updateShipToMapping,
-} from "./api";
-import type { SkuMapping, ShipToMapping } from "@/types";
+import DateDisplay from "@/components/shared/DateDisplay";
+import { fetchCustomers, fetchCustomerDetail, fetchItems } from "./api";
+import type { TradingPartner, CustomerSkuMapping, CustomerShipTo } from "@/types";
 
-// ── Partners tab ────────────────────────────────────────────────────────────
+// ── formatters ───────────────────────────────────────────────────────────────
 
-function PartnersTab() {
-  const { data, isLoading, isError } = useQuery({
-    queryKey: ["master-data", "partners"],
-    queryFn: () => fetchPartners({ limit: 50 }),
-  });
+const inr = (v: string | null) =>
+  v === null || v === undefined
+    ? "—"
+    : new Intl.NumberFormat("en-IN", {
+        style: "currency",
+        currency: "INR",
+        minimumFractionDigits: 2,
+      }).format(Number(v));
 
-  if (isLoading) return <TableSkeleton rows={5} cols={6} />;
-  if (isError) return <Alert variant="destructive"><AlertDescription>Failed to load.</AlertDescription></Alert>;
-  if (!data?.items.length) return <EmptyState title="No partners" description="No trading partners configured." />;
+const num = (v: string | number | null, dp = 2) =>
+  v === null || v === undefined
+    ? "—"
+    : new Intl.NumberFormat("en-IN", {
+        minimumFractionDigits: dp,
+        maximumFractionDigits: dp,
+      }).format(Number(v));
 
+const dash = (v: string | null | undefined) =>
+  v ? v : <span className="text-muted-foreground">—</span>;
+
+function ActiveBadge({ active }: { active: boolean }) {
   return (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          <TableHead>Code</TableHead>
-          <TableHead>Name</TableHead>
-          <TableHead>Channel</TableHead>
-          <TableHead>Gmail Label</TableHead>
-          <TableHead>B1 CardCode</TableHead>
-          <TableHead>SLA (h)</TableHead>
-          <TableHead>Status</TableHead>
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {data.items.map((p) => (
-          <TableRow key={p.id}>
-            <TableCell className="font-mono text-sm">{p.code}</TableCell>
-            <TableCell>{p.name}</TableCell>
-            <TableCell><Badge variant="outline" className="text-xs">{p.source_channel}</Badge></TableCell>
-            <TableCell className="text-xs text-muted-foreground">{p.gmail_label ?? "—"}</TableCell>
-            <TableCell className="font-mono text-xs">{p.b1_card_code ?? "—"}</TableCell>
-            <TableCell>{p.ack_sla_hours ?? "—"}</TableCell>
-            <TableCell>
-              <Badge variant={p.is_active ? "default" : "secondary"} className="text-xs">
-                {p.is_active ? "Active" : "Inactive"}
-              </Badge>
-            </TableCell>
-          </TableRow>
-        ))}
-      </TableBody>
-    </Table>
+    <Badge variant={active ? "default" : "secondary"} className="text-xs">
+      {active ? "Active" : "Inactive"}
+    </Badge>
   );
 }
 
-// ── Materials tab ───────────────────────────────────────────────────────────
+// ── Expanded customer row: SKU mappings + ship-to addresses ──────────────────
 
-const MATERIALS_PAGE_SIZE = 50;
+function SkuMappingsTable({ rows }: { rows: CustomerSkuMapping[] }) {
+  if (!rows.length) {
+    return (
+      <p className="text-xs text-muted-foreground italic py-3">
+        No SKU mappings for this customer yet.
+      </p>
+    );
+  }
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="border-b text-muted-foreground">
+            <th className="text-left font-medium py-2 pr-4">Buyer SKU Code</th>
+            <th className="text-left font-medium py-2 pr-4">Item Name</th>
+            <th className="text-left font-medium py-2 pr-4">B1 Item Code</th>
+            <th className="text-right font-medium py-2 pr-4">Unit Price</th>
+            <th className="text-right font-medium py-2 pr-4">Margin&nbsp;%</th>
+            <th className="text-right font-medium py-2 pr-4">MRP</th>
+            <th className="text-left font-medium py-2 pr-4">Created</th>
+            <th className="text-left font-medium py-2 pr-4">Updated</th>
+            <th className="text-left font-medium py-2">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((s) => (
+            <tr key={s.id} className="border-b last:border-0 hover:bg-muted/40">
+              <td className="py-2 pr-4 font-mono">{s.buyer_sku}</td>
+              <td className="py-2 pr-4">{dash(s.item_name)}</td>
+              <td className="py-2 pr-4 font-mono">{s.b1_item_code}</td>
+              <td className="py-2 pr-4 text-right tabular-nums">{inr(s.unit_price)}</td>
+              <td className="py-2 pr-4 text-right tabular-nums">{num(s.margin)}</td>
+              {/* MRP is item data, joined from Item_master via the item code */}
+              <td className="py-2 pr-4 text-right tabular-nums text-muted-foreground">{inr(s.mrp)}</td>
+              <td className="py-2 pr-4 text-muted-foreground">
+                <DateDisplay iso={s.created_at} format="dd MMM yyyy" />
+              </td>
+              <td className="py-2 pr-4 text-muted-foreground">
+                <DateDisplay iso={s.updated_at} format="dd MMM yyyy" />
+              </td>
+              <td className="py-2"><ActiveBadge active={s.is_active} /></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
 
-function MaterialsTab() {
-  const [search, setSearch] = useState("");
-  const [page, setPage] = useState(1);
+function ShipToTable({ rows }: { rows: CustomerShipTo[] }) {
+  if (!rows.length) {
+    return (
+      <p className="text-xs text-muted-foreground italic py-3">
+        No ship-to addresses for this customer yet.
+      </p>
+    );
+  }
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="border-b text-muted-foreground">
+            <th className="text-left font-medium py-2 pr-4">DC Code</th>
+            <th className="text-left font-medium py-2 pr-4">Address</th>
+            <th className="text-left font-medium py-2 pr-4">City</th>
+            <th className="text-left font-medium py-2 pr-4">State</th>
+            <th className="text-left font-medium py-2 pr-4">Zip</th>
+            <th className="text-left font-medium py-2 pr-4">GSTIN</th>
+            <th className="text-left font-medium py-2 pr-4">GST Type</th>
+            <th className="text-left font-medium py-2 pr-4">B1 Whs</th>
+            <th className="text-left font-medium py-2">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((s) => (
+            <tr key={s.id} className="border-b last:border-0 hover:bg-muted/40">
+              <td className="py-2 pr-4 font-mono">{s.dc_code}</td>
+              <td className="py-2 pr-4 max-w-[240px]">
+                <p className="truncate" title={s.address ?? undefined}>
+                  {dash(s.address ?? s.street)}
+                </p>
+                {s.warehouse_name && (
+                  <p className="text-muted-foreground text-[11px]">{s.warehouse_name}</p>
+                )}
+              </td>
+              <td className="py-2 pr-4">{dash(s.city)}</td>
+              <td className="py-2 pr-4">{dash(s.state)}</td>
+              <td className="py-2 pr-4 font-mono">{dash(s.zip_code)}</td>
+              <td className="py-2 pr-4 font-mono">{dash(s.gst_regn_no)}</td>
+              <td className="py-2 pr-4">
+                {s.gst_type?.length ? s.gst_type.join(", ") : <span className="text-muted-foreground">—</span>}
+              </td>
+              <td className="py-2 pr-4 font-mono">{dash(s.b1_whs_code)}</td>
+              <td className="py-2"><ActiveBadge active={s.is_active} /></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function CustomerDetailPanel({ customerId }: { customerId: string }) {
+  const [view, setView] = useState<"sku" | "shipto">("sku");
   const { data, isLoading, isError } = useQuery({
-    queryKey: ["master-data", "materials", search, page],
-    queryFn: () =>
-      fetchMaterials({
-        search: search || undefined,
-        limit: MATERIALS_PAGE_SIZE,
-        offset: (page - 1) * MATERIALS_PAGE_SIZE,
-      }),
-    placeholderData: (prev) => prev,
+    queryKey: ["master-data", "customer", customerId],
+    queryFn: () => fetchCustomerDetail(customerId),
   });
 
-  const totalPages = data ? Math.max(1, Math.ceil(data.total / MATERIALS_PAGE_SIZE)) : 1;
+  if (isLoading) {
+    return <div className="py-4"><TableSkeleton rows={3} cols={6} /></div>;
+  }
+  if (isError || !data) {
+    return (
+      <Alert variant="destructive" className="my-3">
+        <AlertDescription>Failed to load customer details.</AlertDescription>
+      </Alert>
+    );
+  }
 
-  if (isError) return <Alert variant="destructive"><AlertDescription>Failed to load.</AlertDescription></Alert>;
+  return (
+    <div className="py-3 space-y-3">
+      {/* Customer attributes */}
+      <div className="grid gap-x-8 gap-y-1.5 text-xs sm:grid-cols-2 lg:grid-cols-4">
+        <div><span className="text-muted-foreground">Business Type: </span>{dash(data.business_type)}</div>
+        <div><span className="text-muted-foreground">Group: </span>{dash(data.group_name)}</div>
+        <div><span className="text-muted-foreground">Email: </span>{dash(data.email_address)}</div>
+        <div>
+          <span className="text-muted-foreground">Phone: </span>
+          {data.phone_numbers?.length ? data.phone_numbers.join(", ") : <span className="text-muted-foreground">—</span>}
+        </div>
+        <div><span className="text-muted-foreground">GSTIN: </span><span className="font-mono">{dash(data.gstin)}</span></div>
+        <div><span className="text-muted-foreground">B1 CardCode: </span><span className="font-mono">{dash(data.b1_card_code)}</span></div>
+        <div><span className="text-muted-foreground">Channel: </span>{data.source_channel}</div>
+        <div><span className="text-muted-foreground">Ack SLA: </span>{data.ack_sla_hours ?? "—"}h</div>
+      </div>
+
+      {/* Sub-tabs: SKU mappings | Ship-to */}
+      <div className="flex gap-1 border-b">
+        <button
+          onClick={() => setView("sku")}
+          className={`px-3 py-1.5 text-xs font-medium border-b-2 -mb-px transition-colors ${
+            view === "sku"
+              ? "border-primary text-foreground"
+              : "border-transparent text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          SKU Mappings ({data.sku_mappings.length})
+        </button>
+        <button
+          onClick={() => setView("shipto")}
+          className={`px-3 py-1.5 text-xs font-medium border-b-2 -mb-px transition-colors ${
+            view === "shipto"
+              ? "border-primary text-foreground"
+              : "border-transparent text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          Ship-to Addresses ({data.ship_to_mappings.length})
+        </button>
+      </div>
+
+      {view === "sku" ? (
+        <SkuMappingsTable rows={data.sku_mappings} />
+      ) : (
+        <ShipToTable rows={data.ship_to_mappings} />
+      )}
+    </div>
+  );
+}
+
+// ── Tab 1: Customers ─────────────────────────────────────────────────────────
+
+function CustomersTab() {
+  const [search, setSearch] = useState("");
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ["master-data", "customers"],
+    queryFn: () => fetchCustomers({ limit: 200 }),
+  });
+
+  if (isError) {
+    return <Alert variant="destructive"><AlertDescription>Failed to load customers.</AlertDescription></Alert>;
+  }
+
+  const term = search.trim().toLowerCase();
+  const rows: TradingPartner[] = (data?.items ?? []).filter(
+    (c) => !term || c.code.toLowerCase().includes(term) || c.name.toLowerCase().includes(term),
+  );
 
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2">
         <Input
-          placeholder="Search item code or description…"
+          placeholder="Search customer code or name…"
           value={search}
-          onChange={(e) => { setSearch(e.target.value); setPage(1); }}
-          className="w-64"
+          onChange={(e) => setSearch(e.target.value)}
+          className="w-72"
         />
-        {data && (
-          <span className="text-xs text-muted-foreground ml-auto">{data.total} items</span>
-        )}
-      </div>
-      {isLoading ? (
-        <TableSkeleton rows={5} cols={5} />
-      ) : !data?.items.length ? (
-        <EmptyState title="No materials" description="No materials match your search." />
-      ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>B1 Item Code</TableHead>
-              <TableHead>Description</TableHead>
-              <TableHead>HSN</TableHead>
-              <TableHead>UoM</TableHead>
-              <TableHead>Status</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {data.items.map((m) => (
-              <TableRow key={m.id}>
-                <TableCell className="font-mono text-sm">{m.b1_item_code}</TableCell>
-                <TableCell className="text-sm">{m.description ?? "—"}</TableCell>
-                <TableCell className="font-mono text-xs">{m.hsn_code ?? "—"}</TableCell>
-                <TableCell>{m.uom ?? "—"}</TableCell>
-                <TableCell>
-                  <Badge variant={m.is_active ? "default" : "secondary"} className="text-xs">
-                    {m.is_active ? "Active" : "Inactive"}
-                  </Badge>
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      )}
-
-      {totalPages > 1 && (
-        <div className="flex items-center justify-end gap-2 text-xs text-muted-foreground">
-          <button
-            disabled={page <= 1}
-            onClick={() => setPage(page - 1)}
-            className="px-2 py-1 rounded border hover:bg-accent disabled:opacity-40"
-          >
-            ‹
-          </button>
-          <span>{page} / {totalPages}</span>
-          <button
-            disabled={page >= totalPages}
-            onClick={() => setPage(page + 1)}
-            className="px-2 py-1 rounded border hover:bg-accent disabled:opacity-40"
-          >
-            ›
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── SKU Mappings tab ─────────────────────────────────────────────────────────
-
-const SKU_PAGE_SIZE = 50;
-
-function SkuMappingsTab() {
-  const queryClient = useQueryClient();
-  const { toast } = useToast();
-  const [search, setSearch] = useState("");
-  const [partnerFilter, setPartnerFilter] = useState("");
-  const [statusFilter, setStatusFilter] = useState("");
-  const [page, setPage] = useState(1);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editValues, setEditValues] = useState<{ b1_item_code: string; qty_per_buyer_uom: string }>({ b1_item_code: "", qty_per_buyer_uom: "" });
-
-  const { data: partnersData } = useQuery({
-    queryKey: ["master-data", "partners"],
-    queryFn: () => fetchPartners({ limit: 50 }),
-    staleTime: 300_000,
-  });
-
-  const { data, isLoading, isError } = useQuery({
-    queryKey: ["master-data", "sku-mappings", search, partnerFilter, statusFilter, page],
-    queryFn: () =>
-      fetchSkuMappings({
-        search: search || undefined,
-        partner_code: partnerFilter || undefined,
-        mapping_status: statusFilter || undefined,
-        limit: SKU_PAGE_SIZE,
-        offset: (page - 1) * SKU_PAGE_SIZE,
-      }),
-    placeholderData: (prev) => prev,
-  });
-
-  const totalPages = data ? Math.max(1, Math.ceil(data.total / SKU_PAGE_SIZE)) : 1;
-
-  const saveMutation = useMutation({
-    mutationFn: (id: string) =>
-      updateSkuMapping(id, {
-        b1_item_code: editValues.b1_item_code,
-        qty_per_buyer_uom: editValues.qty_per_buyer_uom || undefined,
-      }),
-    onSuccess: () => {
-      toast({ title: "SKU mapping saved" });
-      queryClient.invalidateQueries({ queryKey: ["master-data", "sku-mappings"] });
-      setEditingId(null);
-    },
-    onError: () => toast({ title: "Save failed", variant: "destructive" }),
-  });
-
-  function startEdit(row: SkuMapping) {
-    setEditingId(row.id);
-    setEditValues({
-      b1_item_code: row.b1_item_code ?? "",
-      qty_per_buyer_uom: row.qty_per_buyer_uom ?? "",
-    });
-  }
-
-  if (isError) return <Alert variant="destructive"><AlertDescription>Failed to load.</AlertDescription></Alert>;
-
-  return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <Input
-          placeholder="Search buyer SKU…"
-          value={search}
-          onChange={(e) => { setSearch(e.target.value); setPage(1); }}
-          className="w-48"
-        />
-        <select
-          value={partnerFilter}
-          onChange={(e) => { setPartnerFilter(e.target.value); setPage(1); }}
-          className="h-9 rounded-md border border-input bg-background px-3 text-sm"
-        >
-          <option value="">All platforms</option>
-          {(partnersData?.items ?? []).map((p) => (
-            <option key={p.code} value={p.code}>{p.name}</option>
-          ))}
-        </select>
-        <select
-          value={statusFilter}
-          onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }}
-          className="h-9 rounded-md border border-input bg-background px-3 text-sm"
-        >
-          <option value="">All statuses</option>
-          <option value="MANUALLY_MAPPED">Mapped</option>
-          <option value="AUTO_MAPPED">Auto-mapped</option>
-          <option value="UNMAPPED">Unmapped</option>
-        </select>
         {data && (
           <span className="text-xs text-muted-foreground ml-auto">
-            {data.total} mappings
+            {rows.length} of {data.total} customers
           </span>
         )}
       </div>
 
       {isLoading ? (
-        <TableSkeleton rows={6} cols={6} />
-      ) : !data?.items.length ? (
-        <EmptyState title="No SKU mappings" description="No mappings match your filters." />
+        <TableSkeleton rows={6} cols={7} />
+      ) : !rows.length ? (
+        <EmptyState
+          title="No customers"
+          description={term ? "No customers match your search." : "No customers loaded yet."}
+        />
       ) : (
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Partner</TableHead>
-              <TableHead>Buyer SKU</TableHead>
-              <TableHead>B1 Item Code</TableHead>
-              <TableHead>Qty/UoM</TableHead>
+              <TableHead className="w-8" />
+              <TableHead>Customer Code</TableHead>
+              <TableHead>Customer Name</TableHead>
+              <TableHead>Business Type</TableHead>
+              <TableHead>Group</TableHead>
+              <TableHead>Email</TableHead>
+              <TableHead>Channel</TableHead>
               <TableHead>Status</TableHead>
-              <TableHead>Confidence</TableHead>
-              <TableHead></TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {data.items.map((row) => (
-              <TableRow key={row.id}>
-                <TableCell className="text-xs text-muted-foreground">{row.partner_code}</TableCell>
-                <TableCell className="font-mono text-xs">{row.buyer_sku}</TableCell>
-                <TableCell>
-                  {editingId === row.id ? (
-                    <Input
-                      value={editValues.b1_item_code}
-                      onChange={(e) => setEditValues((v) => ({ ...v, b1_item_code: e.target.value }))}
-                      className="h-7 text-xs font-mono w-32"
-                      autoFocus
-                    />
-                  ) : (
-                    <span className="font-mono text-xs">{row.b1_item_code ?? <span className="text-muted-foreground">—</span>}</span>
-                  )}
-                </TableCell>
-                <TableCell>
-                  {editingId === row.id ? (
-                    <Input
-                      value={editValues.qty_per_buyer_uom}
-                      onChange={(e) => setEditValues((v) => ({ ...v, qty_per_buyer_uom: e.target.value }))}
-                      className="h-7 text-xs w-20"
-                      placeholder="1"
-                    />
-                  ) : (
-                    <span className="text-xs">{row.qty_per_buyer_uom ?? "—"}</span>
-                  )}
-                </TableCell>
-                <TableCell>
-                  <Badge
-                    variant={row.mapping_status === "MANUALLY_MAPPED" ? "default" : row.mapping_status === "AUTO_MAPPED" ? "secondary" : "destructive"}
-                    className="text-xs"
+            {rows.map((c) => {
+              const open = expandedId === c.id;
+              return (
+                <Fragment key={c.id}>
+                  <TableRow
+                    className="cursor-pointer"
+                    onClick={() => setExpandedId(open ? null : c.id)}
                   >
-                    {row.mapping_status}
-                  </Badge>
-                </TableCell>
-                <TableCell className="text-xs text-muted-foreground">
-                  {row.confidence_score != null ? `${Math.round(row.confidence_score * 100)}%` : "—"}
-                </TableCell>
-                <TableCell>
-                  {editingId === row.id ? (
-                    <div className="flex gap-1">
-                      <Button size="sm" className="h-7 text-xs" onClick={() => saveMutation.mutate(row.id)} disabled={saveMutation.isPending}>
-                        {saveMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}
-                      </Button>
-                      <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => setEditingId(null)}>
-                        ✕
-                      </Button>
-                    </div>
-                  ) : (
-                    <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => startEdit(row)}>
-                      Edit
-                    </Button>
+                    <TableCell className="pr-0">
+                      {open ? (
+                        <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                      ) : (
+                        <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                      )}
+                    </TableCell>
+                    <TableCell className="font-mono text-sm">{c.code}</TableCell>
+                    <TableCell>{c.name}</TableCell>
+                    <TableCell className="text-sm">{dash(c.business_type)}</TableCell>
+                    <TableCell className="text-sm">{dash(c.group_name)}</TableCell>
+                    <TableCell className="text-xs text-muted-foreground">{dash(c.email_address)}</TableCell>
+                    <TableCell>
+                      <Badge variant="outline" className="text-xs">{c.source_channel}</Badge>
+                    </TableCell>
+                    <TableCell><ActiveBadge active={c.is_active} /></TableCell>
+                  </TableRow>
+                  {open && (
+                    <TableRow className="hover:bg-transparent">
+                      <TableCell colSpan={8} className="bg-muted/30 px-6">
+                        <CustomerDetailPanel customerId={c.id} />
+                      </TableCell>
+                    </TableRow>
                   )}
-                </TableCell>
-              </TableRow>
-            ))}
+                </Fragment>
+              );
+            })}
           </TableBody>
         </Table>
+      )}
+    </div>
+  );
+}
+
+// ── Tab 2: Item Master ───────────────────────────────────────────────────────
+
+const ITEMS_PAGE_SIZE = 50;
+
+function ItemMasterTab() {
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
+
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ["master-data", "items", search, page],
+    queryFn: () =>
+      fetchItems({
+        search: search || undefined,
+        limit: ITEMS_PAGE_SIZE,
+        offset: (page - 1) * ITEMS_PAGE_SIZE,
+      }),
+    placeholderData: (prev) => prev,
+  });
+
+  const totalPages = data ? Math.max(1, Math.ceil(data.total / ITEMS_PAGE_SIZE)) : 1;
+
+  if (isError) {
+    return <Alert variant="destructive"><AlertDescription>Failed to load items.</AlertDescription></Alert>;
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2">
+        <Input
+          placeholder="Search item code, name or EAN…"
+          value={search}
+          onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+          className="w-72"
+        />
+        {data && <span className="text-xs text-muted-foreground ml-auto">{data.total} items</span>}
+      </div>
+
+      {isLoading ? (
+        <TableSkeleton rows={6} cols={8} />
+      ) : !data?.items.length ? (
+        <EmptyState
+          title="No items"
+          description={search ? "No items match your search." : "Item master is empty — load it via POST /api/master-data/materials/sync."}
+        />
+      ) : (
+        <div className="overflow-x-auto">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Item Code</TableHead>
+                <TableHead>Item Name</TableHead>
+                <TableHead>Group</TableHead>
+                <TableHead>HSN</TableHead>
+                <TableHead className="text-right">Tax&nbsp;%</TableHead>
+                <TableHead>UoM</TableHead>
+                <TableHead>Sales UoM</TableHead>
+                <TableHead>VAT (Pu/Sa)</TableHead>
+                <TableHead className="text-right">MRP</TableHead>
+                <TableHead className="text-right">Case</TableHead>
+                <TableHead>EAN</TableHead>
+                <TableHead>Status</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {data.items.map((m) => (
+                <TableRow key={m.id}>
+                  <TableCell className="font-mono text-sm">{m.item_code}</TableCell>
+                  <TableCell className="text-sm">
+                    <p>{dash(m.item_name)}</p>
+                    {m.grammage && (
+                      <p className="text-[11px] text-muted-foreground">{m.grammage}</p>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-xs">
+                    {dash(m.items_group_name)}
+                    {m.itms_grp_cod !== null && (
+                      <span className="text-muted-foreground"> ({m.itms_grp_cod})</span>
+                    )}
+                  </TableCell>
+                  <TableCell className="font-mono text-xs">{dash(m.hsn)}</TableCell>
+                  <TableCell className="text-right tabular-nums text-sm">{num(m.tax_rate)}</TableCell>
+                  <TableCell className="text-sm">{dash(m.invntry_uom)}</TableCell>
+                  <TableCell className="text-sm">{dash(m.sal_unit_msr)}</TableCell>
+                  <TableCell className="text-xs font-mono">
+                    {m.vat_group_pu ?? "—"} / {m.vat_group_sa ?? "—"}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums text-sm">{inr(m.mrp)}</TableCell>
+                  <TableCell className="text-right tabular-nums text-sm">{m.case_size ?? "—"}</TableCell>
+                  <TableCell className="font-mono text-xs">{dash(m.ean_code)}</TableCell>
+                  <TableCell>
+                    <div className="flex flex-col gap-1">
+                      <ActiveBadge active={m.valid_for} />
+                      {m.frozen_for && (
+                        <Badge variant="destructive" className="text-[10px]">Frozen</Badge>
+                      )}
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
       )}
 
       {totalPages > 1 && (
@@ -356,108 +443,6 @@ function SkuMappingsTab() {
             ›
           </button>
         </div>
-      )}
-    </div>
-  );
-}
-
-// ── Ship-to Mappings tab ─────────────────────────────────────────────────────
-
-function ShipToTab() {
-  const queryClient = useQueryClient();
-  const { toast } = useToast();
-  const [partnerFilter, setPartnerFilter] = useState("");
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editValue, setEditValue] = useState("");
-
-  const { data, isLoading, isError } = useQuery({
-    queryKey: ["master-data", "ship-to", partnerFilter],
-    queryFn: () => fetchShipToMappings({ partner_code: partnerFilter || undefined, limit: 100 }),
-    placeholderData: (prev) => prev,
-  });
-
-  const saveMutation = useMutation({
-    mutationFn: (id: string) => updateShipToMapping(id, { b1_whs_code: editValue }),
-    onSuccess: () => {
-      toast({ title: "Ship-to mapping saved" });
-      queryClient.invalidateQueries({ queryKey: ["master-data", "ship-to"] });
-      setEditingId(null);
-    },
-    onError: () => toast({ title: "Save failed", variant: "destructive" }),
-  });
-
-  function startEdit(row: ShipToMapping) {
-    setEditingId(row.id);
-    setEditValue(row.b1_whs_code ?? "");
-  }
-
-  if (isError) return <Alert variant="destructive"><AlertDescription>Failed to load.</AlertDescription></Alert>;
-
-  return (
-    <div className="space-y-3">
-      <Input
-        placeholder="Filter by partner code"
-        value={partnerFilter}
-        onChange={(e) => setPartnerFilter(e.target.value)}
-        className="w-48"
-      />
-      {isLoading ? (
-        <TableSkeleton rows={4} cols={4} />
-      ) : !data?.items.length ? (
-        <EmptyState title="No ship-to mappings" description="No mappings match your filters." />
-      ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Partner</TableHead>
-              <TableHead>Buyer Warehouse</TableHead>
-              <TableHead>B1 WhsCode</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead></TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {data.items.map((row) => (
-              <TableRow key={row.id}>
-                <TableCell className="text-xs text-muted-foreground">{row.partner_code}</TableCell>
-                <TableCell className="font-mono text-sm">{row.buyer_whs_code}</TableCell>
-                <TableCell>
-                  {editingId === row.id ? (
-                    <Input
-                      value={editValue}
-                      onChange={(e) => setEditValue(e.target.value)}
-                      className="h-7 text-xs font-mono w-28"
-                      autoFocus
-                    />
-                  ) : (
-                    <span className="font-mono text-sm">{row.b1_whs_code ?? <span className="text-muted-foreground">—</span>}</span>
-                  )}
-                </TableCell>
-                <TableCell>
-                  <Badge variant={row.is_active ? "default" : "secondary"} className="text-xs">
-                    {row.is_active ? "Active" : "Inactive"}
-                  </Badge>
-                </TableCell>
-                <TableCell>
-                  {editingId === row.id ? (
-                    <div className="flex gap-1">
-                      <Button size="sm" className="h-7 text-xs" onClick={() => saveMutation.mutate(row.id)} disabled={saveMutation.isPending}>
-                        {saveMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}
-                      </Button>
-                      <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => setEditingId(null)}>
-                        ✕
-                      </Button>
-                    </div>
-                  ) : (
-                    <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => startEdit(row)}>
-                      Edit
-                    </Button>
-                  )}
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
       )}
     </div>
   );
@@ -468,20 +453,27 @@ function ShipToTab() {
 export default function MasterDataPage() {
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-semibold">Master Data</h1>
+      <div>
+        <h1 className="text-2xl font-semibold">Master Data</h1>
+        <p className="text-sm text-muted-foreground mt-0.5">
+          Expand a customer to see its SKU mappings and ship-to addresses.
+        </p>
+      </div>
 
-      <Tabs defaultValue="sku-mappings">
+      <Tabs defaultValue="customers">
         <TabsList>
-          <TabsTrigger value="partners">Partners</TabsTrigger>
-          <TabsTrigger value="materials">Material Master</TabsTrigger>
-          <TabsTrigger value="sku-mappings">SKU Mappings</TabsTrigger>
-          <TabsTrigger value="ship-to">Ship-to Mappings</TabsTrigger>
+          <TabsTrigger value="customers" className="gap-1.5">
+            <Users className="h-3.5 w-3.5" />
+            Customers / Partners
+          </TabsTrigger>
+          <TabsTrigger value="items" className="gap-1.5">
+            <Package className="h-3.5 w-3.5" />
+            Item Master
+          </TabsTrigger>
         </TabsList>
 
-        <TabsContent value="partners" className="mt-4"><PartnersTab /></TabsContent>
-        <TabsContent value="materials" className="mt-4"><MaterialsTab /></TabsContent>
-        <TabsContent value="sku-mappings" className="mt-4"><SkuMappingsTab /></TabsContent>
-        <TabsContent value="ship-to" className="mt-4"><ShipToTab /></TabsContent>
+        <TabsContent value="customers" className="mt-4"><CustomersTab /></TabsContent>
+        <TabsContent value="items" className="mt-4"><ItemMasterTab /></TabsContent>
       </Tabs>
     </div>
   );

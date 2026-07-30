@@ -174,7 +174,6 @@ def unmapped_skus(
 ) -> list[UnmappedSkuItem]:
     from sqlalchemy import func, select
 
-    from app.models._enums import MappingStatus
     from app.models.edi_po import EdiPoLineItem, EdiPurchaseOrder
     from app.models.master_data import TradingPartner
 
@@ -182,17 +181,18 @@ def unmapped_skus(
         select(
             EdiPoLineItem.buyer_sku,
             TradingPartner.code.label("partner_code"),
-            EdiPoLineItem.description,
+            EdiPoLineItem.buyer_sku_description.label("description"),
             func.count(EdiPoLineItem.id).label("occurrence_count"),
             func.max(EdiPoLineItem.created_at).label("last_seen"),
         )
         .join(EdiPurchaseOrder, EdiPoLineItem.po_id == EdiPurchaseOrder.id)
         .join(TradingPartner, EdiPurchaseOrder.trading_partner_id == TradingPartner.id)
         .where(
-            EdiPoLineItem.mapping_status == MappingStatus.UNMAPPED,
+            # No ItemCode stamped => SkuMappingRule could not resolve this buyer SKU.
+            EdiPoLineItem.sap_material_no.is_(None),
             EdiPurchaseOrder.deleted_at.is_(None),
         )
-        .group_by(EdiPoLineItem.buyer_sku, TradingPartner.code, EdiPoLineItem.description)
+        .group_by(EdiPoLineItem.buyer_sku, TradingPartner.code, EdiPoLineItem.buyer_sku_description)
         .order_by(func.count(EdiPoLineItem.id).desc())
         .limit(limit)
     ).all()
