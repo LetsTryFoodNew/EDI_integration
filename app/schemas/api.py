@@ -274,11 +274,11 @@ class TradingPartnerResponse(BaseModel):
     gmail_label: str | None
     b1_card_code: str | None
     gstin: str | None
+    pan_card: str | None
     business_type: str | None
     group_name: str | None
     phone_numbers: list[str] | None
     email_address: str | None
-    ack_sla_hours: int | None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -300,9 +300,9 @@ class TradingPartnerUpdate(BaseModel):
     name: str | None = None
     is_active: bool | None = None
     b1_card_code: str | None = None
-    ack_sla_hours: int | None = None
     gmail_label: str | None = None
     gstin: str | None = None
+    pan_card: str | None = None
     business_type: str | None = None
     group_name: str | None = None
     phone_numbers: list[str] | None = None
@@ -330,12 +330,12 @@ class TradingPartnerCreate(BaseModel):
     # Integration config — only meaningful once an adapter/parser exists for this code.
     gmail_label: str | None = None
     webhook_secret: str | None = None
-    ack_sla_hours: int = 24
     asn_sla_hours: int = 48
 
     # Master data — normally supplied later by POST /partners/sync.
     b1_card_code: str | None = None
     gstin: str | None = None
+    pan_card: str | None = None
     business_type: str | None = None
     group_name: str | None = None
     phone_numbers: list[str] | None = None
@@ -369,6 +369,7 @@ class TradingPartnerSyncItem(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     b1_card_code: str | None = None
     gstin: str | None = None
+    pan_card: str | None = None
     business_type: str | None = None
     group_name: str | None = None
     phone_numbers: list[str] | None = None
@@ -402,7 +403,8 @@ class MaterialMasterResponse(BaseModel):
     ean_code: str | None
     mrp: Decimal | None
     frozen_for: bool
-    valid_for: bool
+    valid_for: int          # OITM validFor, 0/1 as SAP sends it
+    is_active: bool         # our operational flag
 
     model_config = {"from_attributes": True}
 
@@ -430,7 +432,8 @@ class MaterialMasterCreate(BaseModel):
     ean_code: str | None = None
     mrp: Decimal | None = None
     frozen_for: bool = False
-    valid_for: bool = True
+    valid_for: int = Field(default=1, ge=0, le=1)
+    is_active: bool = True
 
     model_config = {"extra": "forbid"}
 
@@ -463,7 +466,8 @@ class MaterialMasterUpdate(BaseModel):
     ean_code: str | None = None
     mrp: Decimal | None = None
     frozen_for: bool | None = None
-    valid_for: bool | None = None
+    valid_for: int | None = Field(default=None, ge=0, le=1)
+    is_active: bool | None = None
 
     model_config = {"extra": "forbid"}
 
@@ -493,7 +497,8 @@ class MaterialMasterSyncItem(BaseModel):
     ean_code: str | None = None
     mrp: Decimal | None = None
     frozen_for: bool = False
-    valid_for: bool = True
+    valid_for: int = Field(default=1, ge=0, le=1)
+    is_active: bool = True
 
 
     model_config = {"extra": "forbid"}
@@ -516,7 +521,10 @@ class SkuMappingResponse(BaseModel):
     b1_item_code: str
     unit_price: Decimal | None
     margin: Decimal | None
-    mrp: Decimal | None
+    mrp: Decimal | None            # joined from Item_master
+    ean_code: str | None           # joined from Item_master
+    case_size: int | None          # joined from Item_master
+    grammage: str | None           # joined from Item_master
     qty_per_buyer_uom: Decimal | None
     is_active: bool
     created_at: datetime
@@ -574,6 +582,9 @@ class ShipToMappingResponse(BaseModel):
     country: str | None
     gst_registration_no: str | None
     gst_type: list[str] | None
+    poc_name: str | None
+    poc_email: str | None
+    poc_phone: str | None
 
     model_config = {"from_attributes": True}
 
@@ -602,6 +613,11 @@ class ShipToMappingUpdate(BaseModel):
     country: str | None = None
     gst_registration_no: str | None = None
     gst_type: list[str] | None = None
+
+    # Writable here AND by sync — contact info drifts and ops may fix it locally.
+    poc_name: str | None = None
+    poc_email: str | None = None
+    poc_phone: str | None = None
 
     b1_whs_code: str | None = Field(default=None, min_length=1, max_length=50)
     is_active: bool | None = None
@@ -633,6 +649,9 @@ class ShipToMappingSyncItem(BaseModel):
     country: str | None = None
     gst_registration_no: str | None = None
     gst_type: list[str] | None = None
+    poc_name: str | None = None
+    poc_email: str | None = None
+    poc_phone: str | None = None
 
 
     model_config = {"extra": "forbid"}
@@ -662,6 +681,9 @@ class CustomerSkuMappingItem(BaseModel):
     unit_price: Decimal | None           # customer-specific negotiated price
     margin: Decimal | None               # customer-specific
     mrp: Decimal | None                  # joined from Item_master (item data, not per-customer)
+    ean_code: str | None                 # joined from Item_master
+    case_size: int | None                # joined from Item_master
+    grammage: str | None                 # joined from Item_master
     qty_per_buyer_uom: Decimal | None
     is_active: bool                      # status
     created_at: datetime
@@ -684,6 +706,9 @@ class CustomerShipToItem(BaseModel):
     country: str | None
     gst_regn_no: str | None              # GSTRegnNO
     gst_type: list[str] | None           # gstType[]
+    poc_name: str | None
+    poc_email: str | None
+    poc_phone: str | None
     mapping_status: str
     is_active: bool
 
@@ -698,11 +723,11 @@ class CustomerDetailResponse(BaseModel):
     gmail_label: str | None
     b1_card_code: str | None
     gstin: str | None
+    pan_card: str | None
     business_type: str | None
     group_name: str | None
     phone_numbers: list[str] | None
     email_address: str | None
-    ack_sla_hours: int | None
     created_at: datetime
     sku_mappings: list[CustomerSkuMappingItem]
     ship_to_mappings: list[CustomerShipToItem]
@@ -711,10 +736,11 @@ class CustomerDetailResponse(BaseModel):
 # ── Inbox (raw messages / email PO view) ──────────────────────────────────────
 
 class InboxPartnerSummary(BaseModel):
+    """Shared by all three inbox partner lists (email / api / manual)."""
     code: str
     name: str
     source_channel: str
-    gmail_label: str | None
+    gmail_label: str | None = None     # only meaningful for EMAIL partners
     total: int
     pending: int
     failed: int
@@ -760,16 +786,6 @@ class InboxMessageDetail(BaseModel):
 
 
 # ── API Inbox (API/webhook raw messages) ──────────────────────────────────────
-
-class ApiPartnerSummary(BaseModel):
-    code: str
-    name: str
-    source_channel: str
-    total: int
-    pending: int
-    failed: int
-    last_received_at: datetime | None
-
 
 class ApiPartnerStatus(BaseModel):
     code: str

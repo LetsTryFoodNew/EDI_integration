@@ -1,5 +1,42 @@
 # Changelog
 
+## Phase 8 — Master-data field changes: valid_for int, is_active, pan_card, POC, joined SKU fields (2026-07-18)
+
+Four contract changes requested against the SAP-facing APIs, applied end to end (migration `0010` → models → schemas → routes → demo data → SAP doc → frontend):
+
+- **Item Master** — `valid_for` is now an **integer** (`1`/`0`, exactly as SAP B1 sends `OITM.validFor`; migration converts in place, dropping/recreating the column default which blocks an automatic boolean→int cast). `is_active` added back as a separate boolean — the operational flag, distinct from SAP's data. Both writable on POST/PUT/sync; sync always overwrites them. The Item Master tab's status badge now reads `is_active`.
+- **Customer** — `ack_sla_hours` **removed from the API surface** (create/update/response/detail). The column deliberately stays: `send_outbound.py` and `dashboard.py` read it for SLA monitoring, so dropping it would have broken Phase 7 SLA checks — it just isn't SAP's field to manage. `pan_card` (varchar 10) added across create/update/sync/response; shown in the customer drill-down where Ack SLA used to be.
+- **SKU Mapping GET** — `ean_code`, `case_size` and `grammage` now joined from Item_master alongside `mrp`, on both the list endpoint and the customer drill-down. Drill-down table gained an EAN column, grammage under the item name, case size under the item code.
+- **Ship-to** — `poc_name` / `poc_email` / `poc_phone` added (naming normalised from the request's "poc, mail, contact number"). Writable by **both** sync and PUT — contact info drifts and ops may fix it locally, unlike the address/GST block which stays sync-owned. Drill-down gained a POC column.
+
+Named explicitly: "pencard" was implemented as `pan_card` (PAN, 10 chars).
+
+Verified live: `valid_for=1/is_active` on LTFX fixtures (frozen and inactive edge cases both render), BLINKIT returns `pan_card` and no `ack_sla_hours`, SKU rows carry ean/case/grammage, ship-to carries POC; PUTs for all three checked including restore. Migration up/down/up clean. 177 unit + 17 integration tests, tsc, vitest 12/12, pinned ruff — all green. SAP doc updated in 13 places, including the §12 smoke test (`valid_for: 1`).
+
+## Phase 8 — Inbox partner endpoints aligned with the master-data convention (2026-07-18)
+
+The three inbox partner lists each had their own response shape: bare JSON arrays, and two near-duplicate schemas (`InboxPartnerSummary` with `gmail_label`, `ApiPartnerSummary` without). Aligned all of them with `/api/master-data/partners`:
+
+- **One envelope everywhere** — `/api/inbox/partners`, `/api/api-inbox/partners` and `/api/manual-inbox/partners` now return `{items, total, limit, offset}` and accept `limit` (default 50, max 200) / `offset`, exactly like the master-data lists.
+- **One schema** — `ApiPartnerSummary` deleted; all three use `InboxPartnerSummary`, with `gmail_label` defaulting to null (only meaningful for EMAIL partners).
+- Frontend fetchers unwrap `.items` inside the api modules, so no page component changed; `ApiPartner` gained the `gmail_label` field.
+
+**Note: this is a breaking change to the three partner endpoints** (array → envelope). The local dev frontend picks it up via the volume mount; the deployed frontend and backend ship together through CI, so they stay in step — but any cached/old frontend build against the new backend would show empty partner panels until refreshed.
+
+Verified live: all three endpoints return the four envelope keys, totals partition as 9/5/1, and `offset=2` pages correctly. Pinned ruff clean, `tsc` clean, vitest 12/12.
+
+## Phase 8 — Inbox partitioning: label decides the inbox; Manual Inbox added (2026-07-18)
+
+Formalised the rule that `source_channel` decides which inbox a partner appears in. Previously the two inbox screens used different rules — API Inbox filtered on channel but Email Inbox filtered on `gmail_label IS NOT NULL` — so the tabs did not partition the partner list: RELIANCE_JIO (PORTAL) and any MANUAL partner appeared in **no** inbox, an EMAIL partner without a label would silently vanish, and a PORTAL partner *with* a label would wrongly show under Email.
+
+- **Email Inbox** (`/api/inbox/partners`) now filters `source_channel = EMAIL`. An EMAIL partner with no `gmail_label` shows up visibly unconfigured instead of disappearing.
+- **Manual Inbox** (new): `GET /api/manual-inbox/partners` lists `MANUAL` + `PORTAL` partners. PORTAL lives here deliberately until Phase 9 scraping exists — those orders are effectively manual today, and this gives RELIANCE_JIO a home. Only the partner list is new code: message listing/detail/retry reuse the `/api/inbox/messages*` routes, which were already partner-scoped and channel-agnostic, rather than growing a third copy of that logic.
+- **Frontend**: `features/manual-inbox/` (partner panel + message panel, PORTAL rows labelled "handled manually until scraping is built", empty states pointing at the upcoming manual sales-order form), `/manual-inbox` route, "Manual Inbox" sidebar entry. Message clicks route to the existing `/inbox/{id}` detail page.
+
+The three tabs now partition the active partner list exactly: EMAIL(9) + API/WEBHOOK(5) + MANUAL/PORTAL(1) = 15, verified live. This is the groundwork for the manual sales-order form (create an order for a MANUAL/PORTAL partner by picking from its synced SKU mappings), which is the next piece.
+
+Verified: pinned ruff clean, 177 unit tests pass, `tsc`/`oxlint`/vitest (12) pass, all three partner endpoints checked live, and the reused messages endpoint returns 200 for a PORTAL partner.
+
 ## Phase 8 — CI fixes: UP038, duplicate route, and three broken model tests (2026-07-18)
 
 CI failed on the deployed commit. Fixing it surfaced a gap in how I had been verifying work all session.

@@ -22,8 +22,8 @@ import urllib.request
 # ── Customers (update-only: these 15 codes already exist) ─────────────────────
 # b1_card_code is the one-time link to SAP; everything else is Customer master data.
 PARTNERS = [
-    dict(code="BLINKIT",        name="Blinkit (Grofers India Pvt Ltd)",       b1_card_code="C00012", gstin="27AAECG1234K1Z5", business_type="Quick Commerce", group_name="Modern Trade",  phone_numbers=["+912240001200", "+919812345601"], email_address="vendor.ops@blinkit.com"),
-    dict(code="ZEPTO",          name="Zepto (Kiranakart Technologies)",       b1_card_code="C00013", gstin="27AAFCD5862R1ZX", business_type="Quick Commerce", group_name="Modern Trade",  phone_numbers=["+912240001300"],                  email_address="supplier@zeptonow.com"),
+    dict(code="BLINKIT",        name="Blinkit (Grofers India Pvt Ltd)",       b1_card_code="C00012", gstin="27AAECG1234K1Z5", pan_card="AAECG1234K", business_type="Quick Commerce", group_name="Modern Trade",  phone_numbers=["+912240001200", "+919812345601"], email_address="vendor.ops@blinkit.com"),
+    dict(code="ZEPTO",          name="Zepto (Kiranakart Technologies)",       b1_card_code="C00013", gstin="27AAFCD5862R1ZX", pan_card="AAFCD5862R", business_type="Quick Commerce", group_name="Modern Trade",  phone_numbers=["+912240001300"],                  email_address="supplier@zeptonow.com"),
     dict(code="SWIGGY",         name="Swiggy Instamart",                      b1_card_code="C00014", gstin="29AAGCB4576M1ZP", business_type="Quick Commerce", group_name="Modern Trade",  phone_numbers=["+918040001400"],                  email_address="instamart.vendors@swiggy.in"),
     dict(code="BIGBASKET",      name="BigBasket (Supermarket Grocery)",       b1_card_code="C00015", gstin="29AABCS1429B1Z0", business_type="E-Commerce",     group_name="Modern Trade",  phone_numbers=["+918040001500"],                  email_address="vendor@bigbasket.com"),
     dict(code="AMAZON",         name="Amazon Retail India Pvt Ltd",           b1_card_code="C00016", gstin="29AAICA4872D1ZK", business_type="E-Commerce",     group_name="Marketplace",   phone_numbers=["+918040001600"],                  email_address="vendorcentral@amazon.in"),
@@ -48,7 +48,8 @@ def _item(code, name, hsn, tax, grp_cod, grp, case, lot, gram, ean, mrp, *, froz
         item_code=code, item_name=name, frgn_name=name, hsn=hsn, tax_rate=tax,
         itms_grp_cod=grp_cod, items_group_name=grp, invntry_uom="PCS", sal_unit_msr="CASE",
         vat_group_pu=vat, vat_group_sa=vat, case_size=case, lot_size=lot, grammage=gram,
-        ean_code=ean, mrp=mrp, frozen_for=frozen, valid_for=valid,
+        ean_code=ean, mrp=mrp, frozen_for=frozen,
+        valid_for=1 if valid else 0, is_active=valid,
     )
 
 
@@ -182,7 +183,8 @@ def _build_sku_payload() -> list[dict]:
 SHIP_TO = [
     dict(partner_code="BLINKIT", buyer_whs_code="BL-BLR-001", buyer_warehouse_name="Blinkit Bengaluru DC",
          street="Survey 88, Soukya Road", block="Whitefield", city="Bengaluru", zip_code="560067",
-         state="Karnataka", gst_registration_no="29AAECG1234K1ZT"),
+         state="Karnataka", gst_registration_no="29AAECG1234K1ZT",
+         poc_name="Rakesh Sharma", poc_email="rakesh.s@blinkit.com", poc_phone="+919812345601"),
     dict(partner_code="BLINKIT", buyer_whs_code="BL-HYD-001", buyer_warehouse_name="Blinkit Hyderabad DC",
          street="Plot 32, Medchal Industrial Area", block="Medchal", city="Hyderabad", zip_code="501401",
          state="Telangana", gst_registration_no="36AAECG1234K1ZF"),

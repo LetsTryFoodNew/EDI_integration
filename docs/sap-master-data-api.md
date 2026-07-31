@@ -248,6 +248,7 @@ A customer must exist before sync can update it. This creates it. **Once per cus
   "name": "Doc Demo Retail Pvt Ltd",
   "b1_card_code": "C09999",
   "gstin": "27AAECG1234K1Z5",
+  "pan_card": "AAECG1234K",
   "business_type": "E-Commerce",
   "group_name": "Marketplace",
   "phone_numbers": ["+912240001200"],
@@ -263,13 +264,13 @@ A customer must exist before sync can update it. This creates it. **Once per cus
 | `source_channel` | string | no | `MANUAL` | `EMAIL` / `API` / `WEBHOOK` / `PORTAL` / `MANUAL` |
 | `b1_card_code` | string(50) | no | | SAP `CardCode` |
 | `gstin` | string(15) | no | | |
+| `pan_card` | string(10) | no | | PAN of the customer entity |
 | `business_type` | string(100) | no | | |
 | `group_name` | string(100) | no | | |
 | `phone_numbers` | string[] | no | | Strings — leading zeros / `+91` |
 | `email_address` | string(255) | no | | |
 | `gmail_label` | string(200) | no | | Only for `EMAIL` channel |
 | `webhook_secret` | string(500) | no | | Only for `WEBHOOK` channel |
-| `ack_sla_hours` | integer | no | `24` | |
 | `asn_sla_hours` | integer | no | `48` | |
 | `is_active` | boolean | no | `true` | |
 
@@ -299,6 +300,7 @@ The response includes a **`warnings`** array:
     "name": "Doc Demo Retail Private Limited",
     "b1_card_code": "C09999",
     "gstin": "27AAECG1234K1Z5",
+    "pan_card": "AAECG1234K",
     "business_type": "E-Commerce",
     "group_name": "Marketplace",
     "phone_numbers": ["+912240001200", "+919812345601"],
@@ -364,7 +366,8 @@ Your products. Stored in `material_master`, a 1:1 mirror of B1 `OITM`.
     "ean_code": "8901234599001",
     "mrp": 50.00,
     "frozen_for": false,
-    "valid_for": true }
+    "valid_for": 1,
+    "is_active": true }
 ]}
 ```
 → `{"created": 1, "updated": 0, "skipped": 0, "errors": []}`
@@ -388,19 +391,21 @@ Your products. Stored in `material_master`, a 1:1 mirror of B1 `OITM`.
 | `ean_code` | string(14) | no | Barcode — send as **string** |
 | `mrp` | decimal | no | |
 | `frozen_for` | boolean | no (default `false`) | `Frozen` Y/N → `true`/`false` |
-| `valid_for` | boolean | no (default `true`) | `Valid` Y/N → `true`/`false` |
+| `valid_for` | integer | no (default `1`) | `validFor` as SAP sends it: `1` or `0` |
+| `is_active` | boolean | no (default `true`) | Our operational flag — distinct from `valid_for` |
 
 **Rules**
 
 - Creates **and** updates — a new `item_code` is inserted, an existing one updated.
-- **`frozen_for` and `valid_for` are always overwritten** from your payload. They are SAP's authoritative item-status flags: if SAP unfreezes an item we must stop blocking it immediately, and vice versa. **Send them on every push.**
+- **`frozen_for`, `valid_for` and `is_active` are always overwritten** from your payload (defaults apply when omitted: `false` / `1` / `true`). They are status flags we must not let go stale: if SAP unfreezes an item we must stop blocking it immediately, and vice versa. **Send them on every push.**
+- `valid_for` is an **integer** (`1`/`0`), exactly as SAP B1 represents `validFor`. `is_active` is a separate boolean — our operational flag.
 - Convert B1's `Y`/`N` to JSON `true`/`false`.
 - `case_size` is not an OITM field but we use it — an ordered quantity that is not a whole multiple of the case size is flagged as a PO exception. Send it if you have it.
 - An item soft-deleted on our side is skipped with a message; tell us and we will restore it.
 
 ### 8.2 Read — `GET /api/master-data/materials`
 
-Optional: `search` (matches item code, name or EAN), `valid_for`, `limit`, `offset`.
+Optional: `search` (matches item code, name or EAN), `valid_for` (`1`/`0`), `limit`, `offset`.
 
 ---
 
@@ -461,13 +466,15 @@ Our middleware also does **not** guess mappings. It previously attempted fuzzy d
 
 ### 9.4 Read — `GET /api/master-data/sku-mappings`
 
-Optional: `partner_code`, `is_active`, `search`, `limit`, `offset`. Each row also returns `mrp` joined from Item Master, plus `created_at` / `updated_at`:
+Optional: `partner_code`, `is_active`, `search`, `limit`, `offset`. Each row also returns `mrp`, `ean_code`, `case_size` and `grammage` joined from Item Master, plus `created_at` / `updated_at`:
 
 ```json
 { "id": "0e64f007-…", "partner_code": "BLINKIT",
   "buyer_sku": "8901234560001", "item_name": "Peri Peri Makhana 30g",
   "b1_item_code": "LTFM001", "unit_price": "32.500000",
-  "margin": "35.0000", "mrp": "50.00", "qty_per_buyer_uom": "1.0000",
+  "margin": "35.0000", "mrp": "50.00",
+  "ean_code": "8901234560001", "case_size": 24, "grammage": "30g",
+  "qty_per_buyer_uom": "1.0000",
   "is_active": true, "created_at": "…", "updated_at": "…" }
 ```
 
@@ -493,7 +500,10 @@ Retailer delivery locations. Stored in `ship_to_mapping`.
     "state": "Maharashtra",
     "country": "India",
     "gst_registration_no": "27AAECG1234K1Z5",
-    "gst_type": ["Regular"] }
+    "gst_type": ["Regular"],
+    "poc_name": "Rakesh Sharma",
+    "poc_email": "rakesh.s@docdemo.in",
+    "poc_phone": "+919812345601" }
 ]}
 ```
 → `{"created": 1, "updated": 0, "skipped": 0, "errors": []}`
@@ -513,6 +523,9 @@ Retailer delivery locations. Stored in `ship_to_mapping`.
 | `country` | string(50) | no | |
 | `gst_registration_no` | string(15) | no | GSTIN **of this delivery location** |
 | `gst_type` | string[] | no | e.g. `["Regular"]` |
+| `poc_name` | string(255) | no | Point of contact at this location |
+| `poc_email` | string(255) | no | |
+| `poc_phone` | string(20) | no | String — keep the `+91` prefix |
 
 Natural key: **(`partner_code`, `buyer_whs_code`)**.
 
@@ -583,7 +596,7 @@ curl -s -X POST "$BASE/api/master-data/partners/sync" "${AUTH[@]}" \
 # 3. Item first
 curl -s -X POST "$BASE/api/master-data/materials/sync" "${AUTH[@]}" \
   -d '{"items":[{"item_code":"DOCITEM1","item_name":"Doc Demo Makhana 30g",
-       "hsn":"20089900","tax_rate":12,"invntry_uom":"PCS","mrp":50.00,"valid_for":true}]}'
+       "hsn":"20089900","tax_rate":12,"invntry_uom":"PCS","mrp":50.00,"valid_for":1}]}'
 # expect: {"created":1,…}
 
 # 4. Then a mapping that references it

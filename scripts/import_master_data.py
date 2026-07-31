@@ -120,7 +120,8 @@ def import_materials(session, items: list[dict[str, object]]) -> tuple[int, int,
                 case_size=item["case_size"],
                 ean_code=item["ean"],
                 mrp=item["mrp"],
-                valid_for=item["is_active"],
+                valid_for=1 if item["is_active"] else 0,
+                is_active=item["is_active"],
             ))
             created += 1
         else:
@@ -129,7 +130,8 @@ def import_materials(session, items: list[dict[str, object]]) -> tuple[int, int,
             mat.case_size = item["case_size"]
             mat.ean_code = item["ean"]
             mat.mrp = item["mrp"]
-            mat.valid_for = item["is_active"]
+            mat.valid_for = 1 if item["is_active"] else 0
+            mat.is_active = item["is_active"]
             mat.deleted_at = None
             updated += 1
 
@@ -137,7 +139,8 @@ def import_materials(session, items: list[dict[str, object]]) -> tuple[int, int,
     for code, mat in existing.items():
         if code not in file_codes and mat.deleted_at is None:
             mat.deleted_at = now
-            mat.valid_for = False
+            mat.valid_for = 0
+            mat.is_active = False
             removed += 1
     session.flush()
     return created, updated, removed

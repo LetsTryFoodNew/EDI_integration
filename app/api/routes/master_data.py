@@ -226,10 +226,10 @@ def create_partner(
         source_channel=channel,
         gmail_label=body.gmail_label,
         webhook_secret=body.webhook_secret,
-        ack_sla_hours=body.ack_sla_hours,
         asn_sla_hours=body.asn_sla_hours,
         b1_card_code=body.b1_card_code,
         gstin=body.gstin,
+        pan_card=body.pan_card,
         business_type=body.business_type,
         group_name=body.group_name,
         phone_numbers=body.phone_numbers,
@@ -273,7 +273,14 @@ def get_partner_detail(
     # Inner join: material_id is NOT NULL, so every mapping resolves to an item.
     # MRP comes from Item_master — it is item data, not customer-specific.
     sku_rows = db.execute(
-        select(SkuMapping, MaterialMaster.item_code, MaterialMaster.mrp)
+        select(
+            SkuMapping,
+            MaterialMaster.item_code,
+            MaterialMaster.mrp,
+            MaterialMaster.ean_code,
+            MaterialMaster.case_size,
+            MaterialMaster.grammage,
+        )
         .join(MaterialMaster, SkuMapping.material_id == MaterialMaster.id)
         .where(
             SkuMapping.trading_partner_id == partner.id,
@@ -304,7 +311,7 @@ def get_partner_detail(
         group_name=partner.group_name,
         phone_numbers=partner.phone_numbers,
         email_address=partner.email_address,
-        ack_sla_hours=partner.ack_sla_hours,
+        pan_card=partner.pan_card,
         created_at=partner.created_at,
         sku_mappings=[
             CustomerSkuMappingItem(
@@ -315,6 +322,9 @@ def get_partner_detail(
                 unit_price=row.SkuMapping.unit_price,
                 margin=row.SkuMapping.margin,
                 mrp=row.mrp,
+                ean_code=row.ean_code,
+                case_size=row.case_size,
+                grammage=row.grammage,
                 qty_per_buyer_uom=row.SkuMapping.qty_per_buyer_uom,
                 is_active=row.SkuMapping.is_active,
                 created_at=row.SkuMapping.created_at,
@@ -338,6 +348,9 @@ def get_partner_detail(
                 country=s.country,
                 gst_regn_no=s.gst_registration_no,
                 gst_type=s.gst_type,
+                poc_name=s.poc_name,
+                poc_email=s.poc_email,
+                poc_phone=s.poc_phone,
                 mapping_status=str(s.mapping_status),
                 is_active=s.is_active,
             )
@@ -453,7 +466,7 @@ def sync_partners(
 
         partner.name = item.name
         partner.is_active = _active_flag(item)
-        for field in ("b1_card_code", "gstin", "business_type",
+        for field in ("b1_card_code", "gstin", "pan_card", "business_type",
                       "group_name", "phone_numbers", "email_address"):
             value = getattr(item, field)
             if value is not None:
@@ -475,7 +488,7 @@ def sync_partners(
 @router.get("/materials", response_model=PaginatedResponse[MaterialMasterResponse])
 def list_materials(
     search: str | None = Query(None),
-    valid_for: bool | None = Query(None),
+    valid_for: int | None = Query(None, ge=0, le=1),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_sync_db),
@@ -552,7 +565,7 @@ def update_material(
 
     `item_code` is intentionally not editable — it is the natural key SAP syncs on, and
     changing it would orphan every SKU mapping pointing at this item. To replace an
-    item, retire it (`valid_for: false`) and create the new one.
+    item, retire it (`valid_for: 0`) and create the new one.
 
     SAP remains the source of truth: a later POST /materials/sync overwrites these
     fields. Use this for correction and testing, not as a substitute for fixing SAP.
@@ -569,7 +582,7 @@ def update_material(
         reason=(
             "item_code is the key SAP syncs on and the target of every SKU mapping's "
             "b1ItemCode — changing it would orphan those mappings. Retire this item "
-            "with valid_for=false and create the replacement instead."
+            "with valid_for=0 and create the replacement instead."
         ),
     )
 
@@ -621,7 +634,9 @@ def sync_materials(
             select(MaterialMaster).where(MaterialMaster.item_code == code)
         ).scalar_one_or_none()
 
-        fields = item.model_dump(exclude={"item_code"} | _SYNC_READ_ONLY)
+        # is_active is writable for items (it is a real column now, distinct from
+        # SAP's valid_for) — drop it from the shared read-only set for this endpoint.
+        fields = item.model_dump(exclude={"item_code"} | (_SYNC_READ_ONLY - {"is_active"}))
 
         if material:
             if material.deleted_at is not None:
@@ -646,7 +661,10 @@ def sync_materials(
 
 
 # ── SKU Mappings ──────────────────────────────────────────────────────────────
-def _sku_row_to_response(m: object, partner_code: str, item_code: str, mrp) -> SkuMappingResponse:
+def _sku_row_to_response(
+    m: object, partner_code: str, item_code: str, mrp,
+    ean_code=None, case_size=None, grammage=None,
+) -> SkuMappingResponse:
     return SkuMappingResponse(
         id=m.id,
         trading_partner_id=m.trading_partner_id,
@@ -657,6 +675,9 @@ def _sku_row_to_response(m: object, partner_code: str, item_code: str, mrp) -> S
         unit_price=m.unit_price,
         margin=m.margin,
         mrp=mrp,
+        ean_code=ean_code,
+        case_size=case_size,
+        grammage=grammage,
         qty_per_buyer_uom=m.qty_per_buyer_uom,
         is_active=m.is_active,
         created_at=m.created_at,
@@ -688,6 +709,9 @@ def list_sku_mappings(
             TradingPartner.code.label("partner_code"),
             MaterialMaster.item_code,
             MaterialMaster.mrp,
+            MaterialMaster.ean_code,
+            MaterialMaster.case_size,
+            MaterialMaster.grammage,
         )
         .join(TradingPartner, SkuMapping.trading_partner_id == TradingPartner.id)
         .join(MaterialMaster, SkuMapping.material_id == MaterialMaster.id)
@@ -711,7 +735,10 @@ def list_sku_mappings(
     rows = db.execute(q.limit(limit).offset(offset)).all()
 
     items = [
-        _sku_row_to_response(row.SkuMapping, row.partner_code, row.item_code, row.mrp)
+        _sku_row_to_response(
+            row.SkuMapping, row.partner_code, row.item_code, row.mrp,
+            row.ean_code, row.case_size, row.grammage,
+        )
         for row in rows
     ]
     return PaginatedResponse(items=items, total=total, limit=limit, offset=offset)
@@ -839,6 +866,9 @@ def _ship_to_row_to_response(m: object, partner_code: str) -> ShipToMappingRespo
         country=m.country,
         gst_registration_no=m.gst_registration_no,
         gst_type=m.gst_type,
+        poc_name=m.poc_name,
+        poc_email=m.poc_email,
+        poc_phone=m.poc_phone,
     )
 
 
@@ -911,7 +941,8 @@ def update_ship_to(
         ),
     )
 
-    if body.b1_whs_code is None and body.is_active is None:
+    _WRITABLE = ("b1_whs_code", "is_active", "poc_name", "poc_email", "poc_phone")
+    if all(getattr(body, f) is None for f in _WRITABLE):
         raise HTTPException(status_code=422, detail="No fields to update")
 
     if body.b1_whs_code is not None:
@@ -919,13 +950,21 @@ def update_ship_to(
         mapping.mapping_status = MappingStatus.MANUALLY_MAPPED
     if body.is_active is not None:
         mapping.is_active = body.is_active
+    # POC contact info is writable both here and by sync — it drifts, ops may fix it.
+    for f in ("poc_name", "poc_email", "poc_phone"):
+        v = getattr(body, f)
+        if v is not None:
+            setattr(mapping, f, v)
 
     db.add(AuditLog(
         user_email=current_user.email,
         action="update_ship_to_mapping",
         entity_type="ShipToMapping",
         entity_id=str(mapping_id),
-        payload={"b1_whs_code": body.b1_whs_code, "is_active": body.is_active},
+        payload=body.model_dump(
+            include={"b1_whs_code", "is_active", "poc_name", "poc_email", "poc_phone"},
+            exclude_none=True, mode="json",
+        ),
         ip_address=request.client.host if request.client else None,
     ))
     db.flush()

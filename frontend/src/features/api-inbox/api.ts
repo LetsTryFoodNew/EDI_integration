@@ -7,6 +7,7 @@ export interface ApiPartner {
   code: string;
   name: string;
   source_channel: string;
+  gmail_label: string | null;   // only meaningful for EMAIL partners
   total: number;
   pending: number;
   failed: number;
@@ -29,8 +30,10 @@ export interface ApiMessageDetail {
 }
 
 export async function fetchApiPartners(): Promise<ApiPartner[]> {
-  const res = await apiClient.get<ApiPartner[]>("/api/api-inbox/partners");
-  return res.data;
+  const res = await apiClient.get<{ items: ApiPartner[] }>("/api/api-inbox/partners", {
+    params: { limit: 200 },
+  });
+  return res.data.items;
 }
 
 export async function fetchApiMessages(

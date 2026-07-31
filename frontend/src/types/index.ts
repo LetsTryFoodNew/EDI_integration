@@ -206,11 +206,11 @@ export interface TradingPartner {
   gmail_label: string | null;
   b1_card_code: string | null;
   gstin: string | null;
+  pan_card: string | null;
   business_type: string | null;        // customerBusinessType
   group_name: string | null;           // customerGroupName
   phone_numbers: string[] | null;      // phoneNumber[]
   email_address: string | null;        // emailAddress
-  ack_sla_hours: number | null;
   created_at: string;
 }
 
@@ -234,7 +234,8 @@ export interface MaterialMaster {
   ean_code: string | null;
   mrp: string | null;
   frozen_for: boolean;
-  valid_for: boolean;
+  valid_for: number;                   // OITM validFor, 0/1 as SAP sends it
+  is_active: boolean;                  // our operational flag
 }
 
 // SKU_Mapping row nested under its parent customer.
@@ -247,7 +248,10 @@ export interface CustomerSkuMapping {
   b1_item_code: string;                // b1ItemCode
   unit_price: string | null;           // unitPrice
   margin: string | null;
-  mrp: string | null;                  // from Item_master
+  mrp: string | null;                  // joined from Item_master
+  ean_code: string | null;             // joined from Item_master
+  case_size: number | null;            // joined from Item_master
+  grammage: string | null;             // joined from Item_master                  // from Item_master
   qty_per_buyer_uom: string | null;
   is_active: boolean;                  // status
   created_at: string;
@@ -270,6 +274,9 @@ export interface CustomerShipTo {
   country: string | null;
   gst_regn_no: string | null;          // GSTRegnNO
   gst_type: string[] | null;           // gstType[]
+  poc_name: string | null;
+  poc_email: string | null;
+  poc_phone: string | null;
   mapping_status: string;
   is_active: boolean;
 }

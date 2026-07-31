@@ -68,6 +68,7 @@ class TradingPartner(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     b1_card_code: Mapped[str | None] = mapped_column(String(50))
     gstin: Mapped[str | None] = mapped_column(String(15))
+    pan_card: Mapped[str | None] = mapped_column(String(10))
     source_channel: Mapped[SourceChannel] = mapped_column(
         Enum(SourceChannel, name="source_channel_t", create_type=False),
         nullable=False,
@@ -122,7 +123,8 @@ class MaterialMaster(Base):
     ean_code: Mapped[str | None] = mapped_column(String(14), index=True)
     mrp: Mapped[float | None] = mapped_column(Numeric(10, 2))
     frozen_for: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)      # OITM Y/N
-    valid_for: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)        # OITM Y/N
+    valid_for: Mapped[int] = mapped_column(Integer, nullable=False, default=1)           # OITM validFor 0/1
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)        # our operational flag
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -197,6 +199,10 @@ class ShipToMapping(Base):
     country: Mapped[str | None] = mapped_column(String(50))
     gst_registration_no: Mapped[str | None] = mapped_column(String(15))
     gst_type: Mapped[list[str] | None] = mapped_column(ARRAY(String(30)))
+    # Point of contact at the delivery location (synced from SAP, editable by ops).
+    poc_name: Mapped[str | None] = mapped_column(String(255))
+    poc_email: Mapped[str | None] = mapped_column(String(255))
+    poc_phone: Mapped[str | None] = mapped_column(String(20))
     notes: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)

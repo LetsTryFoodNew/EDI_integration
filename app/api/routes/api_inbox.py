@@ -24,8 +24,8 @@ from app.models._enums import SourceChannel
 from app.schemas.api import (
     ApiMessageDetail,
     ApiPartnerStatus,
-    ApiPartnerSummary,
     InboxMessageItem,
+    InboxPartnerSummary,
     PaginatedResponse,
     UserResponse,
 )
@@ -38,26 +38,30 @@ router = APIRouter(prefix="/api/api-inbox", tags=["API Inbox"])
 _API_CHANNELS = (SourceChannel.API, SourceChannel.WEBHOOK)
 
 
-@router.get("/partners", response_model=list[ApiPartnerSummary])
+@router.get("/partners", response_model=PaginatedResponse[InboxPartnerSummary])
 def list_api_partners(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(get_sync_db),
     _current_user: UserResponse = Depends(get_current_user),
-) -> list[ApiPartnerSummary]:
+) -> PaginatedResponse[InboxPartnerSummary]:
     """Return active API/webhook partners with per-partner message counts."""
     from sqlalchemy import func, select
 
     from app.models.master_data import TradingPartner
     from app.models.raw_messages import RawMessage
 
+    base_q = select(TradingPartner).where(
+        TradingPartner.is_active.is_(True),
+        TradingPartner.deleted_at.is_(None),
+        TradingPartner.source_channel.in_(_API_CHANNELS),
+    )
+    total = db.execute(select(func.count()).select_from(base_q.subquery())).scalar_one()
     partners = db.execute(
-        select(TradingPartner).where(
-            TradingPartner.is_active.is_(True),
-            TradingPartner.deleted_at.is_(None),
-            TradingPartner.source_channel.in_(_API_CHANNELS),
-        ).order_by(TradingPartner.name)
+        base_q.order_by(TradingPartner.name).limit(limit).offset(offset)
     ).scalars().all()
 
-    result: list[ApiPartnerSummary] = []
+    result: list[InboxPartnerSummary] = []
     for p in partners:
         counts = db.execute(
             select(
@@ -68,7 +72,7 @@ def list_api_partners(
             ).where(RawMessage.trading_partner_id == p.id)
         ).one()
 
-        result.append(ApiPartnerSummary(
+        result.append(InboxPartnerSummary(
             code=p.code,
             name=p.name,
             source_channel=str(p.source_channel),
@@ -78,7 +82,7 @@ def list_api_partners(
             last_received_at=counts.last_received_at,
         ))
 
-    return result
+    return PaginatedResponse(items=result, total=total, limit=limit, offset=offset)
 
 
 @router.get("/status", response_model=list[ApiPartnerStatus])

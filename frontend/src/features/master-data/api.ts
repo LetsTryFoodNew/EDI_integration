@@ -39,7 +39,7 @@ export async function updateCustomer(
 
 export async function fetchItems(params?: {
   search?: string;
-  valid_for?: boolean;
+  valid_for?: number;
   limit?: number;
   offset?: number;
 }): Promise<PaginatedResponse<MaterialMaster>> {

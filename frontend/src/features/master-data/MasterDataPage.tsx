@@ -67,6 +67,7 @@ function SkuMappingsTable({ rows }: { rows: CustomerSkuMapping[] }) {
             <th className="text-left font-medium py-2 pr-4">Buyer SKU Code</th>
             <th className="text-left font-medium py-2 pr-4">Item Name</th>
             <th className="text-left font-medium py-2 pr-4">B1 Item Code</th>
+            <th className="text-left font-medium py-2 pr-4">EAN</th>
             <th className="text-right font-medium py-2 pr-4">Unit Price</th>
             <th className="text-right font-medium py-2 pr-4">Margin&nbsp;%</th>
             <th className="text-right font-medium py-2 pr-4">MRP</th>
@@ -79,8 +80,17 @@ function SkuMappingsTable({ rows }: { rows: CustomerSkuMapping[] }) {
           {rows.map((s) => (
             <tr key={s.id} className="border-b last:border-0 hover:bg-muted/40">
               <td className="py-2 pr-4 font-mono">{s.buyer_sku}</td>
-              <td className="py-2 pr-4">{dash(s.item_name)}</td>
-              <td className="py-2 pr-4 font-mono">{s.b1_item_code}</td>
+              <td className="py-2 pr-4">
+                <p>{dash(s.item_name)}</p>
+                {s.grammage && <p className="text-muted-foreground text-[11px]">{s.grammage}</p>}
+              </td>
+              <td className="py-2 pr-4 font-mono">
+                <p>{s.b1_item_code}</p>
+                {s.case_size !== null && (
+                  <p className="text-muted-foreground text-[11px] font-sans">case of {s.case_size}</p>
+                )}
+              </td>
+              <td className="py-2 pr-4 font-mono">{dash(s.ean_code)}</td>
               <td className="py-2 pr-4 text-right tabular-nums">{inr(s.unit_price)}</td>
               <td className="py-2 pr-4 text-right tabular-nums">{num(s.margin)}</td>
               {/* MRP is item data, joined from Item_master via the item code */}
@@ -121,6 +131,7 @@ function ShipToTable({ rows }: { rows: CustomerShipTo[] }) {
             <th className="text-left font-medium py-2 pr-4">GSTIN</th>
             <th className="text-left font-medium py-2 pr-4">GST Type</th>
             <th className="text-left font-medium py-2 pr-4">B1 Whs</th>
+            <th className="text-left font-medium py-2 pr-4">POC</th>
             <th className="text-left font-medium py-2">Status</th>
           </tr>
         </thead>
@@ -144,6 +155,18 @@ function ShipToTable({ rows }: { rows: CustomerShipTo[] }) {
                 {s.gst_type?.length ? s.gst_type.join(", ") : <span className="text-muted-foreground">—</span>}
               </td>
               <td className="py-2 pr-4 font-mono">{dash(s.b1_whs_code)}</td>
+              <td className="py-2 pr-4">
+                {s.poc_name ? (
+                  <>
+                    <p>{s.poc_name}</p>
+                    <p className="text-muted-foreground text-[11px]">
+                      {[s.poc_phone, s.poc_email].filter(Boolean).join(" · ")}
+                    </p>
+                  </>
+                ) : (
+                  <span className="text-muted-foreground">—</span>
+                )}
+              </td>
               <td className="py-2"><ActiveBadge active={s.is_active} /></td>
             </tr>
           ))}
@@ -185,7 +208,7 @@ function CustomerDetailPanel({ customerId }: { customerId: string }) {
         <div><span className="text-muted-foreground">GSTIN: </span><span className="font-mono">{dash(data.gstin)}</span></div>
         <div><span className="text-muted-foreground">B1 CardCode: </span><span className="font-mono">{dash(data.b1_card_code)}</span></div>
         <div><span className="text-muted-foreground">Channel: </span>{data.source_channel}</div>
-        <div><span className="text-muted-foreground">Ack SLA: </span>{data.ack_sla_hours ?? "—"}h</div>
+        <div><span className="text-muted-foreground">PAN: </span><span className="font-mono">{dash(data.pan_card)}</span></div>
       </div>
 
       {/* Sub-tabs: SKU mappings | Ship-to */}
@@ -412,7 +435,7 @@ function ItemMasterTab() {
                   <TableCell className="font-mono text-xs">{dash(m.ean_code)}</TableCell>
                   <TableCell>
                     <div className="flex flex-col gap-1">
-                      <ActiveBadge active={m.valid_for} />
+                      <ActiveBadge active={m.is_active} />
                       {m.frozen_for && (
                         <Badge variant="destructive" className="text-[10px]">Frozen</Badge>
                       )}

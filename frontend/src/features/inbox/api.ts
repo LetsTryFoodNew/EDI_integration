@@ -56,9 +56,13 @@ export interface PaginatedMessages {
   offset: number;
 }
 
+// All three inbox partner endpoints share the master-data envelope
+// ({items,total,limit,offset}); the panels only need the items.
 export async function fetchInboxPartners(): Promise<InboxPartner[]> {
-  const res = await apiClient.get<InboxPartner[]>("/api/inbox/partners");
-  return res.data;
+  const res = await apiClient.get<{ items: InboxPartner[] }>("/api/inbox/partners", {
+    params: { limit: 200 },
+  });
+  return res.data.items;
 }
 
 export interface InboxMessageFilters {

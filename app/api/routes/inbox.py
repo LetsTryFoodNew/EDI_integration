@@ -32,23 +32,35 @@ if TYPE_CHECKING:
 router = APIRouter(prefix="/api/inbox", tags=["Inbox"])
 
 
-@router.get("/partners", response_model=list[InboxPartnerSummary])
+@router.get("/partners", response_model=PaginatedResponse[InboxPartnerSummary])
 def list_inbox_partners(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(get_sync_db),
     _current_user: UserResponse = Depends(get_current_user),
-) -> list[InboxPartnerSummary]:
-    """Return all active partners that have a Gmail label, with message counts."""
+) -> PaginatedResponse[InboxPartnerSummary]:
+    """
+    Return all active EMAIL-channel partners, with message counts.
+
+    The label decides the inbox: EMAIL here, API+WEBHOOK in /api/api-inbox,
+    MANUAL+PORTAL in /api/manual-inbox. Filtering on source_channel (not
+    gmail_label) means an EMAIL partner whose label is still unset shows up
+    here — visibly unconfigured — instead of vanishing from every screen.
+    """
     from sqlalchemy import func, select
 
+    from app.models._enums import SourceChannel
     from app.models.master_data import TradingPartner
     from app.models.raw_messages import RawMessage
 
+    base_q = select(TradingPartner).where(
+        TradingPartner.is_active.is_(True),
+        TradingPartner.deleted_at.is_(None),
+        TradingPartner.source_channel == SourceChannel.EMAIL,
+    )
+    total = db.execute(select(func.count()).select_from(base_q.subquery())).scalar_one()
     partners = db.execute(
-        select(TradingPartner).where(
-            TradingPartner.is_active.is_(True),
-            TradingPartner.deleted_at.is_(None),
-            TradingPartner.gmail_label.isnot(None),
-        ).order_by(TradingPartner.name)
+        base_q.order_by(TradingPartner.name).limit(limit).offset(offset)
     ).scalars().all()
 
     result: list[InboxPartnerSummary] = []
@@ -73,7 +85,7 @@ def list_inbox_partners(
             last_received_at=counts.last_received_at,
         ))
 
-    return result
+    return PaginatedResponse(items=result, total=total, limit=limit, offset=offset)
 
 
 @router.get("/messages", response_model=PaginatedResponse[InboxMessageItem])

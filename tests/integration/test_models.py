@@ -97,7 +97,8 @@ def material(session: Session) -> MaterialMaster:
         hsn="20089900",
         tax_rate=12.0,
         invntry_uom="PCS",
-        valid_for=True,
+        valid_for=1,
+        is_active=True,
     )
     session.add(m)
     session.flush()

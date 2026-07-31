@@ -30,7 +30,7 @@ const customer: TradingPartner = {
   group_name: "Modern Trade",
   phone_numbers: ["+919812345678"],
   email_address: "vendors@blinkit.com",
-  ack_sla_hours: 4,
+  pan_card: "AAECG1234K",
   created_at: "2026-01-01T00:00:00Z",
 };
 
@@ -45,6 +45,9 @@ const customerDetail: CustomerDetail = {
       unit_price: "32.50",
       margin: "35.0",
       mrp: "50.00",
+      ean_code: "8901234567890",
+      case_size: 24,
+      grammage: "30g",
       qty_per_buyer_uom: "1",
       is_active: true,
       created_at: "2026-01-01T00:00:00Z",
@@ -67,6 +70,9 @@ const customerDetail: CustomerDetail = {
       country: "India",
       gst_regn_no: "27AAECG1234K1Z5",
       gst_type: ["Regular"],
+      poc_name: "Rakesh Sharma",
+      poc_email: "rakesh.s@blinkit.com",
+      poc_phone: "+919812345601",
       mapping_status: "MANUALLY_MAPPED",
       is_active: true,
     },
@@ -92,7 +98,8 @@ const item: MaterialMaster = {
   ean_code: "8901234560001",
   mrp: "50.00",
   frozen_for: false,
-  valid_for: true,
+  valid_for: 1,
+  is_active: true,
 };
 
 function page<T>(items: T[]): PaginatedResponse<T> {
