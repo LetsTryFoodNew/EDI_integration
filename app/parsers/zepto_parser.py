@@ -61,8 +61,8 @@ Known quirks:
   - Line items key is `poLineItems` (not `lineItems`)
   - PO number is in `code` (not `purchaseOrderNumber`)
   - eventId is stored as raw_message.external_id (idempotency key)
-  - `materialCode` is the buyer's EAN/material ref — use as buyer_sku
-  - `skuCode` is Zepto's internal UUID — store separately if needed
+  - `skuCode` (UUID) is the mapping key — SKU_Mapping.buyer_sku is built on it
+  - `materialCode` is a secondary buyer-side ref, fallback only
   - `costPrice` is the per-unit cost Zepto pays (matches taxExclusiveCost * qty roughly)
   - taxExclusiveCost is the per-unit pre-tax price we should use for unit_price
   - Rate limit: 60 RPM per clientId
@@ -197,7 +197,7 @@ class ZeptoParser(BaseParser):
             try:
                 lines.append(_zepto_item_to_line(item, line_no))
             except Exception as exc:
-                sku = item.get("materialCode") or item.get("skuCode") or "?"
+                sku = item.get("skuCode") or item.get("materialCode") or "?"
                 errors.append(f"Line {line_no} (sku={sku}): {exc}")
         return lines, errors
 
@@ -205,8 +205,11 @@ class ZeptoParser(BaseParser):
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _zepto_item_to_line(item: dict[str, Any], line_number: int) -> EDI850Line:
-    # buyer_sku: prefer materialCode (Zepto's buyer-side EAN/code); fall back to skuCode
-    buyer_sku = item.get("materialCode") or item.get("skuCode") or ""
+    # buyer_sku: prefer skuCode — the UUID Zepto uses in its own catalogue and the key
+    # the ops mapping sheet (SKU_Mapping.buyer_sku) is built on. materialCode ("2223")
+    # is a secondary ref that the sheet does NOT key on; preferring it made every line
+    # miss its mapping despite the mappings being loaded.
+    buyer_sku = item.get("skuCode") or item.get("materialCode") or ""
     if not buyer_sku:
         raise ValueError("poLineItem has no materialCode or skuCode")
 

@@ -56,6 +56,10 @@ _MIN_REQUEST_INTERVAL = 60 / _RPM_LIMIT  # seconds between requests
 _MAX_RETRIES = 3
 _RETRY_BACKOFF = (5, 15, 60)  # seconds between retries on 5xx
 
+# Minimum history requested on every poll — see _since_to_days() for why this floor
+# exists rather than trusting the watermark delta. Zepto caps `days` at 45.
+_MIN_LOOKBACK_DAYS = 14
+
 
 class ZeptoApiAdapter(BaseApiAdapter):
     """
@@ -152,6 +156,14 @@ class ZeptoApiAdapter(BaseApiAdapter):
         while page <= max_pages:
             page_data = self._fetch_page(days=days, page=page, page_size=20)
             if page_data is None:
+                if page == 1:
+                    # Total failure must NOT look like "no new POs" — returning []
+                    # here once let the watermark advance past unfetched data while
+                    # every request was being rejected. Raise so the workflow records
+                    # the error and leaves the watermark alone.
+                    raise RuntimeError(
+                        "Zepto fetch failed on the first page — see zepto.fetch.* logs"
+                    )
                 break
 
             purchase_orders: list[dict[str, Any]] = page_data.get("purchaseOrders") or []
@@ -296,7 +308,45 @@ class ZeptoApiAdapter(BaseApiAdapter):
                     time.sleep(wait)
                     continue
 
-                body = resp.json()
+                if resp.status_code == 428:
+                    # Zepto returns 428 with an EMPTY body when the calling IP is not
+                    # on its allowlist. Nothing about that response mentions IPs, and
+                    # the empty body used to surface as a JSON decode error
+                    # ("Expecting value: line 1 column 1"), which reads like a
+                    # credentials or payload fault and sent us chasing the wrong thing.
+                    # Retrying cannot help — the IP will not change mid-run — so fail
+                    # immediately rather than burning the backoff budget.
+                    log.error(
+                        "zepto.fetch.ip_not_whitelisted",
+                        status_code=428,
+                        url=str(resp.url),
+                        page=page,
+                        detail=(
+                            "Zepto rejected this IP (HTTP 428, empty body). Credentials "
+                            "are not the problem. Run the fetch from a whitelisted host, "
+                            "or ask Zepto to allowlist this egress IP."
+                        ),
+                    )
+                    return None
+
+                try:
+                    body = resp.json()
+                except ValueError:
+                    # Non-JSON body = we are being blocked or misrouted (e.g. calling
+                    # Zepto directly from a non-whitelisted IP returns an HTML page).
+                    # Log what actually came back — "Expecting value" hides the cause.
+                    log.error(
+                        "zepto.fetch.non_json_response",
+                        status_code=resp.status_code,
+                        url=str(resp.url),
+                        body_snippet=resp.text[:200],
+                        page=page,
+                        attempt=attempt,
+                    )
+                    if attempt < _MAX_RETRIES:
+                        time.sleep(backoff)
+                        continue
+                    return None
 
                 # Proxy surfaces real Zepto errors as HTTP 200 with status_code field
                 proxy_err = _check_proxy_error(body)
@@ -350,12 +400,25 @@ class ZeptoApiAdapter(BaseApiAdapter):
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _since_to_days(since: datetime | None) -> int:
-    """Convert a watermark datetime to the `days` param Zepto expects (1–45)."""
+    """
+    Convert a watermark datetime to the `days` param Zepto expects (1–45).
+
+    Always asks for at least `_MIN_LOOKBACK_DAYS`, regardless of how recently we last
+    polled. The watermark advances on every successful poll and the scheduler runs every
+    few minutes, so a naive `now - since` delta collapses to days=1 almost immediately —
+    which is what production had been sending. A one-day window leaves no margin for a PO
+    that Zepto backdates, publishes late, or that we miss during an outage: once it falls
+    outside the window it is never requested again.
+
+    Re-requesting the overlap costs nothing downstream. `raw_messages` is unique on
+    (trading_partner_id, external_id) where external_id is Zepto's `eventId`, so events
+    we have already stored are skipped before they ever reach the parser.
+    """
     if since is None:
-        return 7
+        return _MIN_LOOKBACK_DAYS
     now = datetime.now(UTC)
     delta = now - (since.replace(tzinfo=UTC) if since.tzinfo is None else since)
-    return min(max(1, delta.days + 1), 45)
+    return min(max(_MIN_LOOKBACK_DAYS, delta.days + 1), 45)
 
 
 def _check_proxy_error(raw: Any) -> dict[str, Any] | None:

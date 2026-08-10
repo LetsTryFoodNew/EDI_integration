@@ -41,7 +41,7 @@ services:
     ports:
       # Host-side port is overridable per-deploy (some hosts already have
       # something on 8000) — container always listens on 8000 internally.
-      - "${API_HOST_PORT:-8000}:8000"
+      - "${API_HOST_PORT:-8001}:8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -130,12 +130,12 @@ services:
       target: dev
     restart: unless-stopped
     ports:
-      - "5173:5173"
+      - "5174:5173"
     volumes:
       - ./frontend:/app
       - /app/node_modules
     environment:
-      VITE_API_BASE_URL: http://localhost:8000
+      VITE_API_BASE_URL: http://localhost:8001
 
   # ── Frontend (nginx-served production build; proxies /health,/api to api) ─
   frontend-prod:

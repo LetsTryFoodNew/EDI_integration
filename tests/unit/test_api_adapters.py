@@ -120,20 +120,23 @@ class TestZeptoApiAdapter:
         assert results[0].external_id == "evt_p1"
         assert results[1].external_id == "evt_p2"
 
-    def test_fetch_returns_empty_on_500(self) -> None:
-        import respx
+    def test_fetch_raises_on_total_failure(self) -> None:
+        """
+        First-page total failure must RAISE, not return [] — an empty return is
+        indistinguishable from "no new POs", which once let the watermark advance
+        while every request was being rejected (Zepto 428 on a non-whitelisted IP).
+        """
         import httpx
+        import pytest
+        import respx
 
         with respx.mock:
-            # 3 consecutive 500s — should exhaust retries and return empty
             respx.get(self._events_url()).mock(
                 return_value=httpx.Response(500, json={"error": "server error"})
             )
-            # Patch sleep to avoid slowing the test
-            with patch("app.adapters.api.zepto_api.time.sleep"):
-                results = self.adapter.fetch_new_pos()
-
-        assert results == []
+            with patch("app.adapters.api.zepto_api.time.sleep"), \
+                 pytest.raises(RuntimeError, match="first page"):
+                self.adapter.fetch_new_pos()
 
     def test_fetch_respects_429_retry_after(self) -> None:
         import respx
@@ -156,14 +159,33 @@ class TestZeptoApiAdapter:
         assert slept[0] == 1  # respected Retry-After: 1
 
     def test_since_to_days_none(self) -> None:
-        from app.adapters.api.zepto_api import _since_to_days
-        assert _since_to_days(None) == 7
+        from app.adapters.api.zepto_api import _MIN_LOOKBACK_DAYS, _since_to_days
+        assert _since_to_days(None) == _MIN_LOOKBACK_DAYS
 
-    def test_since_to_days_recent(self) -> None:
-        from app.adapters.api.zepto_api import _since_to_days
+    def test_since_to_days_recent_uses_floor(self) -> None:
+        """A 2-day-old watermark must still request the full lookback window."""
+        from app.adapters.api.zepto_api import _MIN_LOOKBACK_DAYS, _since_to_days
         from datetime import timedelta
         since = datetime.now(UTC).replace(microsecond=0) - timedelta(days=2)
-        assert _since_to_days(since) == 3  # 2 days + 1 for partial
+        assert _since_to_days(since) == _MIN_LOOKBACK_DAYS
+
+    def test_since_to_days_just_polled_uses_floor(self) -> None:
+        """
+        Regression: the scheduler re-polls every few minutes, so the watermark delta
+        rounds to 0 and the old code asked Zepto for days=1 — a window too narrow to
+        recover a backdated or missed PO.
+        """
+        from app.adapters.api.zepto_api import _MIN_LOOKBACK_DAYS, _since_to_days
+        from datetime import timedelta
+        since = datetime.now(UTC) - timedelta(minutes=6)
+        assert _since_to_days(since) == _MIN_LOOKBACK_DAYS
+
+    def test_since_to_days_exceeds_floor(self) -> None:
+        """Beyond the floor, the watermark delta still drives the window."""
+        from app.adapters.api.zepto_api import _since_to_days
+        from datetime import timedelta
+        since = datetime.now(UTC).replace(microsecond=0) - timedelta(days=20)
+        assert _since_to_days(since) == 21  # 20 days + 1 for the partial day
 
     def test_since_to_days_capped_at_45(self) -> None:
         from app.adapters.api.zepto_api import _since_to_days

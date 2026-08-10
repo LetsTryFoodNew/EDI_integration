@@ -200,7 +200,9 @@ class TestZeptoParser:
         assert len(doc.line_items) == 2
 
         line1 = doc.line_items[0]
-        assert line1.buyer_sku == "Z-SKU-001"
+        # buyer_sku keys on skuCode (UUID) — the ops mapping sheet is built on it;
+        # materialCode ("Z-SKU-001" here) is only a fallback.
+        assert line1.buyer_sku == "007ec75c-int-uuid-1"
         assert line1.buyer_sku_description == "Peri Peri Makhana 80g"
         assert line1.ordered_qty == Decimal("100")
         assert line1.unit_price == Decimal("90.00")

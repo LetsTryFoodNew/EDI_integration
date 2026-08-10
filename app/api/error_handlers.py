@@ -243,9 +243,18 @@ def register_error_handlers(app: FastAPI) -> None:
             404: "NOT_FOUND", 405: "METHOD_NOT_ALLOWED", 409: "CONFLICT",
             415: "UNSUPPORTED_MEDIA_TYPE", 422: "VALIDATION_ERROR",
         }
+        # Webhook endpoints authenticate with an `api-key` header, not a Bearer
+        # token — telling a partner to call /auth/login sends them down a path that
+        # cannot work for them (they have no user account).
+        is_webhook = request.url.path.startswith("/api/webhooks/")
         hints = {
-            401: ("Send 'Authorization: Bearer <access_token>'. Tokens expire after 8 hours — "
-                  "call POST /auth/login again."),
+            401: (
+                "Send your webhook key as the 'api-key' header. It must match the "
+                "secret configured for this partner; contact us if you need it reissued."
+                if is_webhook else
+                "Send 'Authorization: Bearer <access_token>'. Tokens expire after 8 hours — "
+                "call POST /auth/login again."
+            ),
             405: "Check the HTTP method against the API document.",
         }
         # A route may raise HTTPException(detail={"immutable_fields": [...]}) to report

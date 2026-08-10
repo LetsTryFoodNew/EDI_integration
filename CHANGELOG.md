@@ -1,5 +1,130 @@
 # Changelog
 
+## Phase 4 — Local frontend was reading the wrong backend (2026-08-10)
+
+The API Inbox showed 4 Zepto POs locally while the server held 362. Both numbers were
+correct — they are different databases, and the local dev server was never pointed at the
+deployed backend.
+
+`VITE_BASE_PATH=https://.../edi-backend/api/` had been added to the **root** `.env`. Three
+things stopped it working: the SPA reads `VITE_API_BASE_URL`, not `VITE_BASE_PATH` (which
+is Vite's asset sub-path); Vite only loads env files from `frontend/`, so a root-level
+`.env` is invisible to it; and the trailing `/api/` would have doubled up against route
+paths that already start with `/api`.
+
+Pointing `VITE_API_BASE_URL` at the deployed host would still not have worked. The SPA
+authenticates with an httpOnly cookie set `SameSite=Lax`, which browsers refuse to send on
+cross-site XHR — login succeeds, then every subsequent request 401s into a redirect loop.
+
+- `vite.config.ts` now proxies `/api`, `/auth` and `/health` through the dev server, so the
+  browser only ever makes same-origin requests. No CORS entry and no backend change needed.
+  `cookieDomainRewrite` re-scopes the session cookie to localhost.
+- The config now reads env via `loadEnv()`. `process.env` in `vite.config.ts` sees only
+  real shell variables, never `.env.local` — the same trap as the original mistake.
+- Proxy fallback corrected to `http://localhost:8001`: the api container publishes on 8001
+  (`API_HOST_PORT` in docker-compose.yml), while `.env.development` still pointed at 8000.
+- `frontend/.env.local` (gitignored) selects the target via `VITE_PROXY_TARGET`.
+- Verified: requests through the dev server return `server: nginx/1.31.2` (the deployed
+  host) rather than `server: uvicorn` (local). `tsc --noEmit` clean, 12 frontend tests pass.
+
+## Phase 4 — Zepto 428 is an IP allowlist rejection, not bad credentials (2026-08-10)
+
+A live credential test from a dev machine returns **HTTP 428 with an empty body**. The
+credentials are valid; Zepto rejects the calling IP. Because the body is empty, this used
+to surface as `Expecting value: line 1 column 1` — indistinguishable from a credentials or
+payload fault, which is what "invalid client credentials" was really describing.
+
+- Added an explicit 428 branch logging `zepto.fetch.ip_not_whitelisted` and stating that
+  credentials are not the cause. It returns immediately instead of spending three retries
+  on a condition that cannot change mid-run.
+
+## Phase 4 — Zepto poll window floored at 14 days (2026-08-10)
+
+Production was polling Zepto with `days=1` on every run. `_since_to_days()` derived the
+window from `now - last_fetched_at`, and because the scheduler re-polls every few minutes
+the delta always rounded down to 0 → `max(1, 0+1)` → `days=1`. Confirmed in the live
+worker logs: `zepto.fetch.done days=1`.
+
+A one-day window has no margin. Any PO that Zepto backdates, publishes late, or that we
+miss during an outage falls outside the window on the very next poll and is never
+requested again — which is precisely how the 28 Jul POs were lost.
+
+- Added `_MIN_LOOKBACK_DAYS = 14`; `_since_to_days()` now returns at least that floor,
+  still capped at Zepto's documented max of 45. Beyond the floor the watermark delta
+  still drives the window.
+- Re-requesting the overlap is free: `raw_messages` is unique on
+  `(trading_partner_id, external_id)` where `external_id` is Zepto's `eventId`, so
+  already-seen events are skipped before reaching the parser.
+- Tests: added a regression case for the just-polled watermark (the `days=1` bug) and one
+  asserting the delta still governs past the floor.
+
+Duplicate-PO safety was audited at the same time and needs no change. Three layers already
+guard it: `eventId` uniqueness on `raw_messages`, `(trading_partner_id, buyer_po_number,
+version)` uniqueness on `edi_purchase_orders`, and `_resolve_version()` which bumps the
+version and marks the prior row `SUPERSEDED`. Production shows this working — `P368480`
+exists as v1 `SUPERSEDED` + v2 `EXCEPTION`, a genuine Zepto revision, and is the only
+repeated PO number across 362 rows.
+
+## Phase 4 — Webhook 401 hint was sending partners down the wrong path (2026-08-07)
+
+Blinkit reported `UNAUTHENTICATED: Invalid api-key` on `POST /api/webhooks/BLINKIT`. The rejection itself was correct — a `webhook_secret` is configured for BLINKIT on the server and the key they sent did not match — but the accompanying `hint` read *"Send 'Authorization: Bearer <access_token>'… call POST /auth/login again."*
+
+That advice is impossible for a webhook partner to follow: Blinkit has no user account and webhooks authenticate with an `api-key` header, not a bearer token. The generic 401 hint in `error_handlers.py` was being applied to every 401 regardless of endpoint.
+
+- The 401 hint is now **path-aware**: requests under `/api/webhooks/` get "Send your webhook key as the 'api-key' header…"; everything else keeps the Bearer/login hint.
+- Verified both branches locally against a real configured secret: wrong key → 401 with the webhook hint, correct key → 200. Probe rows cleaned up afterwards; the local `webhook_secret` was reset to empty.
+
+Server confirmed healthy during diagnosis: `POST /api/webhooks/BLINKIT` is live, routing works (unknown partner → 404), and auth is enforced.
+
+## Phase 4 — Zepto fetch outage: watermark poisoning + parser rekey (2026-08-01)
+
+**The 4 test POs Zepto pushed on 28 Jul (P368477–P368480) were missed by two stacked failures.**
+
+The second one is the reason a fix alone was not enough: the silent-failure bug advanced
+`last_fetched_at` to *now* on every failed poll for two weeks. Since the adapter derives
+Zepto's `days` window from that watermark, it had drifted to `days=1` — so even from the
+whitelisted server IP, the fetch would ask Zepto for "the last 1 day" and never see POs
+pushed 4 days earlier. Wound the watermark back to the last genuinely successful fetch
+(2026-07-17T19:39), which yields `days=15`.
+
+- **`scripts/reset_api_watermark.py`** (new) — `--show` / `--to` / `--days-ago` / `--clear`.
+  **The deployed VPS has its own database and its own poisoned watermark**; it must be reset
+  there too, or the deploy alone will still return nothing.
+
+## Phase 4 — Zepto fetch outage diagnosed and fixed; parser rekeyed to skuCode (2026-08-01)
+
+Zepto pushed 4 new test POs that never appeared. Root-cause chain, in order:
+
+1. **`.env` had lost `RENDER_URL` and gained `ENVIRONMENT=production` (with an inline comment)** — the adapter dropped to direct mode. Then the Render proxy itself turned out to be dead (no response in 180s), and per the decision made during the fix, **Render is now retired entirely**: the backend calls Zepto directly, and the deployed server's IP is the whitelisted one. `RENDER_URL` is intentionally unset; the proxy code path remains in the adapter, inert.
+2. **Zepto rejects non-whitelisted IPs with HTTP 428 and an empty body** — which the adapter logged only as "Expecting value: line 1 column 1". Added `zepto.fetch.non_json_response` logging (status, URL, body snippet) so a block page can never masquerade as a JSON bug again.
+3. **Silent-failure bug (mine): the watermark advanced on every failed fetch.** The workflow correctly gates `last_fetched_at` on `not result.errors`, but the adapter swallowed all page errors and returned `[]` — indistinguishable from "no new POs". `fetch_new_pos` now **raises** on first-page total failure; the workflow records the error and leaves the watermark alone. `test_fetch_returns_empty_on_500` asserted the old behaviour and was rewritten as `test_fetch_raises_on_total_failure`.
+4. **Parser keyed Zepto lines on the wrong field.** `buyer_sku` preferred `materialCode` ("2223"), but the ops mapping sheet keys Zepto SKUs by the UUID `skuCode` — so all 105 loaded mappings would never match a PO line. Preference flipped to `skuCode`-first; the 4 stored test POs re-parsed successfully (P368265, P368264, P367071, P367067). Client timeout also raised 30s→90s.
+
+**Local fetches still fail by design** — this machine's IP is not whitelisted; the 428 is now loud and the watermark stays put. The fetch will work from the deployed VPS.
+
+⚠️ **Deploy-side check before expecting POs on the VPS:** if its `.env` says `ENVIRONMENT=production`, the adapter targets `silkroute.zepto.co.in` (prod), but the test POs live on QA (`silkroute.zeptonow.dev`). Set `ZEPTO_BASE_URL=https://silkroute.zeptonow.dev` there while testing against Zepto QA.
+
+## Phase 8 — Real SKU mappings loaded customer-wise from the mapping sheet (2026-08-01)
+
+Loaded "SAP FILLING SHEET - MAPPING.csv" through `POST /sku-mappings/sync` — 961 sheet rows → **631 mappings across 8 customers**, zero rejections (every referenced SAP item code resolved against the 182-item catalogue). Verified customer-wise via `GET /partners/{id}`: AMAZON 75, BIGBASKET 81, BLINKIT 91, FLIPKART 100, LOTS 10, RELIANCE_JIO 26, SWIGGY 143, ZEPTO 105 — each row carrying the retailer's own code (EAN / UUID / ASIN / FSN / numeric), negotiated `unit_price` (from UNIT COST) and `margin` (from Discount), with mrp/ean/case/grammage joined from Item Master.
+
+- **`scripts/import_sku_mapping_csv.py`** (new, reusable, idempotent — re-run reports `updated=631`). `RELIANCE` in the sheet maps to our `RELIANCE_JIO`; UNIT COST `0.00`/blank is treated as *not negotiated* and omitted rather than stored as a zero PriceVarianceRule would flag every PO against.
+- **LOTS partner created** via `POST /partners` (MANUAL channel, inert) — the sheet trades with LOTS Wholesale but no such partner existed. Its 10 mappings loaded; it appears in Manual Inbox until an integration is built.
+- Skipped by design and reported: 245 chain-less rows (EAN-keyed reference block + blank filler), 85 rows whose SAP ITEM CODE is `#N/A` (retailer listings not yet mapped in SAP — the sheet's own unmapped backlog, largest on SWIGGY with 55). 16 rows carry a SAP ALTERNATE CODE we have no field for.
+
+With master data now real end to end (items + mappings), an incoming Zepto/Blinkit PO can resolve its lines against actual FG codes — E002_SKU_UNRESOLVED should now only fire for genuinely unmapped listings.
+
+## Phase 8 — Real SKU master loaded; dummy items removed (2026-07-18)
+
+Item Master now holds the company's real catalogue, loaded from the ops team's "Master Sheet - SKU MASTER.csv" through `POST /materials/sync` — the same path SAP will use, so the load is idempotent (verified: re-run reports `updated=182`, no duplicates).
+
+- **`scripts/import_sku_master_csv.py`** (new, reusable) — maps SAP ID→item_code, SKU SAP NAME→item_name, SKU INTERNAL NAME→frgn_name, CATEGORY→items_group_name, grammage/case/MRP/EAN/HSN; `Status: INACTIVE` → `is_active=false, valid_for=0`.
+- **Loaded 182 items** (180 active + FG00161, FG00186 inactive). **53 CSV rows skipped** — every one lacks a SAP ID and is a discontinued INACTIVE line (Pratham range, gifting boxes), so nothing active was lost. No duplicate SAP IDs in the sheet.
+- **Deleted the 19 dummy items** (LTF*) **and the 57 demo SKU mappings** pointing at them — the mappings had to go with the items (NOT NULL FK) and were equally fake. Checked first: zero PO line items referenced those mappings, so no transactional data was touched.
+- **Not loaded:** SHELF LIFE (Day) and SKU IMAGE — Item_master has no columns for them. Shelf life is a one-migration add if wanted.
+
+`sku_mapping` is now empty by design: real mappings arrive from SAP keyed to the FG item codes. Until then, any incoming PO will raise E002_SKU_UNRESOLVED — expected, that is the fail-loud path.
+
 ## Phase 8 — Master-data field changes: valid_for int, is_active, pan_card, POC, joined SKU fields (2026-07-18)
 
 Four contract changes requested against the SAP-facing APIs, applied end to end (migration `0010` → models → schemas → routes → demo data → SAP doc → frontend):
