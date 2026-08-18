@@ -190,37 +190,62 @@ def send_outbound_job(outbound_msg_id: str) -> dict[str, object]:
 
 def poll_b1_outbound_job() -> dict[str, object]:
     """
-    RQ job: poll B1 for new Deliveries and Invoices, trigger ACKs for confirmed POs.
+    RQ job: trigger 855 ACKs for SAP-confirmed POs.
 
-    Enqueued by the scheduler every 5 minutes. Calls three workflow functions:
-      1. trigger_acks_for_confirmed_pos — queue ACKs for SAP_CONFIRMED POs
-      2. poll_b1_deliveries             — create ASNs for new B1 Delivery Notes
-      3. poll_b1_invoices               — create Invoice notifications for new B1 Invoices
+    Enqueued by the scheduler every 5 minutes. Deliveries and invoices used to be
+    polled here too; they moved to poll_b1_documents_backup_job when SAP started
+    pushing invoices to POST /api/invoices. ACKs stay on the fast cadence because
+    they are SLA-bound (trading_partners.ack_sla_hours) and have no push equivalent.
     """
     import redis
     from rq import Queue
 
     from app.config import get_settings
-    from app.workflows.b1_to_outbound import (
-        poll_b1_deliveries,
-        poll_b1_invoices,
-        trigger_acks_for_confirmed_pos,
-    )
+    from app.workflows.b1_to_outbound import trigger_acks_for_confirmed_pos
 
     settings = get_settings()
     redis_conn = redis.from_url(settings.redis_url)
     outbound_queue = Queue("outbound", connection=redis_conn)
 
     acks = trigger_acks_for_confirmed_pos(outbound_queue)
+
+    summary: dict[str, object] = {"acks_enqueued": acks}
+    log.info("job.poll_b1_outbound.done", extra=summary)
+    return summary
+
+
+def poll_b1_documents_backup_job() -> dict[str, object]:
+    """
+    RQ job: safety net for Deliveries and Invoices that SAP never pushed.
+
+    SAP posting to POST /api/invoices is the primary path — it is immediate and costs
+    no Service Layer session. But a push that fails and is never retried would
+    otherwise vanish silently, which is the same failure mode that let the Zepto
+    `days=1` bug run for two weeks unnoticed. So the original polling stays, on an
+    hourly cadence instead of every five minutes.
+
+    Safe to overlap with the push path: both converge on the same upsert, keyed on
+    invoice_number (UNIQUE), so a document that arrives twice is updated, not
+    duplicated.
+    """
+    import redis
+    from rq import Queue
+
+    from app.config import get_settings
+    from app.workflows.b1_to_outbound import poll_b1_deliveries, poll_b1_invoices
+
+    settings = get_settings()
+    redis_conn = redis.from_url(settings.redis_url)
+    outbound_queue = Queue("outbound", connection=redis_conn)
+
     deliveries = poll_b1_deliveries(outbound_queue)
     invoices = poll_b1_invoices(outbound_queue)
 
     summary: dict[str, object] = {
-        "acks_enqueued": acks,
         "deliveries_processed": deliveries,
         "invoices_processed": invoices,
     }
-    log.info("job.poll_b1_outbound.done", extra=summary)
+    log.info("job.poll_b1_documents_backup.done", extra=summary)
     return summary
 
 

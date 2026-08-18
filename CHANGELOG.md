@@ -1,5 +1,114 @@
 # Changelog
 
+## Phase 8 — Bill-to addresses (2026-08-18)
+
+A parallel master-data resource to Ship-to, for the retailer's **invoicing** entity.
+
+Deliberately its own table rather than a `type` flag on `ship_to_mapping`, because the
+two are different things that routinely differ: goods go to a distribution centre, the
+invoice goes to the registered office. When those sit in different states both are
+needed — the **ship-to** state decides CGST/SGST vs IGST (place of supply, CLAUDE.md
+section 8), while the **bill-to** GSTIN is what prints on the invoice as the buyer's
+registration. A single combined row cannot express that, and would mis-tax the common
+interstate case. The B1 target differs too: ship-to resolves to a warehouse (`WhsCode`),
+bill-to to an address name on the Business Partner — hence `b1_bill_to_code`.
+
+- Migration `0011` creates `bill_to_mapping`, keyed on
+  (`trading_partner_id`, `buyer_bill_to_code`). Reuses the existing `mapping_status_t`
+  enum, so no new type is created or dropped. Verified reversible: upgrade → downgrade
+  → upgrade.
+- `GET /api/master-data/bill-to`, `PUT .../{id}`, `POST .../bill-to/sync` — mirroring
+  ship-to exactly, including the ownership split: sync writes address and GST fields
+  only and never touches `b1_bill_to_code`, so a re-sync cannot undo an ops mapping.
+  Confirmed by test: after mapping `ZEP-HO` and re-syncing, it stayed
+  `BILLTO-HO`/`MANUALLY_MAPPED`.
+- `GET /api/master-data/partners/{id}` gains `bill_to_mappings`, so the customer
+  drill-down still costs one round trip.
+- Master Data UI: a third sub-tab under each customer — SKU Mappings | Ship-to | Bill-to.
+- Round-trip and immutability behaviour matches ship-to: GET → PUT unchanged returns
+  200; changing a sync-owned field (`city`) or the identity code returns 409
+  `IMMUTABLE_FIELD` rather than silently discarding the edit.
+- Contract documented for the SAP team as section 11 of `docs/sap-master-data-api.md`
+  (following sections renumbered), plus two requests in the Postman collection.
+- The existing `MasterDataPage` test fixture had to gain `bill_to_mappings` — without it
+  `data.bill_to_mappings.length` threw and blanked the whole panel, which is what the
+  failing test caught.
+
+## Phase 7 — Invoice detail, manual ASN send, PDF download (2026-08-11)
+
+Clicking a row on the Invoices tab now opens full detail: header, e-invoicing references,
+line items with a single collapsed tax column (CGST+SGST and IGST are mutually exclusive,
+so three mostly-zero columns read worse than one), and a totals block.
+
+- **Send ASN** covers both dead ends the tab surfaces. An invoice held by validation has
+  no ASN — the button raises and queues one, which is an explicit operator override, so it
+  is written to the audit log with `validation_override: true` and the open
+  `E200_INVOICE_HELD` issues are resolved to stop the exception queue showing work that
+  someone has already dealt with. An invoice whose dispatch failed instead gets its retry
+  counter reset and is re-queued. Refused with `409` when the ASN is already delivered and
+  acknowledged: re-sending a live 856 creates a duplicate shipment notice at the retailer,
+  which is worse than the problem it would be fixing.
+- **Download PDF** renders a GST tax invoice on demand. Not cached — SAP re-pushes invoices
+  to add the IRN, and a stored PDF would show stale references with no signal it had aged.
+  Fetched through the axios instance rather than a bare `<a href>` so it carries auth;
+  otherwise the link lands on the login page instead of a file.
+- New dependency **reportlab 4.2.5**, recorded in CLAUDE.md section 2. Chosen over
+  weasyprint because it is pure Python — no cairo/pango to install in the image — and its
+  platypus `Table` handles line-item pagination, verified on a 40-line Swiggy invoice that
+  breaks across two pages with the header repeating.
+- `_inr()` formats with Indian digit grouping (`12,34,567.50`); Python's own separator
+  groups in threes throughout, which is wrong on an Indian tax invoice.
+- Rendering the first real PDF caught a defect: `edi_purchase_orders.ship_to_address` is
+  JSONB, and stringifying it put a raw Python dict —
+  `{'name': 'TEST-MUM-FARUKHNAGR', 'gstin': ...}` — on the customer-facing invoice.
+  `_address_lines()` now walks the known keys in postal order and tolerates the string,
+  empty and non-dict shapes different parsers produce.
+
+## Phase 7 — SAP pushes invoices; ASNs raise automatically (2026-08-11)
+
+Invoices now arrive by SAP posting to `POST /api/invoices` rather than us polling B1 for
+them — the same inversion already chosen for master data, and for the same reason:
+Service Layer sessions are licensed and capped, so a recurring read against them is the
+wrong shape. Supersedes the polling-first design in CLAUDE.md Phase 7, which has been
+updated rather than left contradicting the code.
+
+**Receiving an invoice raises its ASN and sends it.** No channel branching: the outbound
+registry already resolves Zepto/Blinkit to their APIs and Swiggy to email from the
+partner's `source_channel`, so the workflow hands over a partner-neutral payload and the
+existing adapters do the rest.
+
+**Dispatch is automatic only when the invoice validates.** Two checks gate it — the header
+`grand_total` must reconcile with the sum of line totals within ₹1.00 (B1 rounds centrally,
+so an exact match is not realistic), and cumulative invoiced quantity must not exceed the
+ordered quantity counting every other invoice on that PO. A failure stores the invoice and
+**holds** it in the exceptions queue as `E200_INVOICE_HELD`. An ASN cannot be quietly
+retracted once a retailer has it, so the expensive direction of error is sending, not
+waiting.
+
+- `POST /api/invoices` — batch up to 500, idempotent on `invoice_number`. Per-invoice
+  `results[]` so one bad row in a batch is actionable without guessing which.
+- `GET /api/invoices`, `GET /api/pos/{po_id}/invoices` — the latter backs a new **Invoices**
+  tab on PO detail showing invoice, IRN state, ASN number and whether the partner received it.
+- Re-pushing is expected: B1 has no IRN when the invoice is posted, so SAP pushes once
+  immediately and again when the IRP responds. A re-push never raises a second ASN.
+- Polling demoted to an hourly backup (`B1_BACKUP_POLL_INTERVAL_SECONDS`) rather than
+  removed — a push that fails and is never retried would otherwise vanish silently, the
+  same failure mode as the Zepto `days=1` bug. The 855 ACK trigger stays at 5 minutes;
+  it is SLA-bound and has no push equivalent.
+- Contract for the SAP team: `docs/sap-invoice-api.md`.
+- `scripts/create_dummy_invoices.py` builds test invoices for both dispatch channels,
+  deriving quantities and tax from the PO's own lines so they reconcile and clear
+  validation instead of testing the gate. `--dry-run`, `--json-only DIR` (Postman
+  payloads, written to `tests/fixtures/invoices/`) and `--cleanup` to undo.
+- Creating those dummies surfaced a real defect: `edi_outbound_messages.channel` defaults
+  to `"API"` and was never set, so a Swiggy ASN was stored labelled `API`. Dispatch was
+  unaffected — `send_outbound` re-resolves the adapter from `partner.source_channel` — but
+  the outbound tab would have pointed anyone debugging an email failure at the API path.
+  Now stamped from the partner.
+- Verified end-to-end against a real PO: valid partial dispatch → ASN raised and queued;
+  same invoice re-pushed → updated, no second ASN; cumulative 3+4 against 5 ordered →
+  held with the running total named. 14 new unit tests; 193 backend tests pass.
+
 ## Phase 4 — Local frontend was reading the wrong backend (2026-08-10)
 
 The API Inbox showed 4 Zepto POs locally while the server held 362. Both numbers were

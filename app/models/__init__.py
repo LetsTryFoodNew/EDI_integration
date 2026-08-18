@@ -15,6 +15,7 @@ from app.models.edi_po import (
 )
 from app.models.invoice import EdiInvoice, EdiInvoiceLineItem
 from app.models.master_data import (
+    BillToMapping,
     MaterialMaster,
     SellerEntity,
     ShipToMapping,
@@ -42,6 +43,7 @@ __all__ = [
     "EdiInvoiceLineItem",
     "MaterialMaster",
     "SellerEntity",
+    "BillToMapping",
     "ShipToMapping",
     "SkuMapping",
     "TradingPartner",

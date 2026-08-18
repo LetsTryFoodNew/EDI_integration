@@ -281,9 +281,36 @@ export interface CustomerShipTo {
   is_active: boolean;
 }
 
+// Bill_to_mapping row nested under its parent customer.
+// Separate from CustomerShipTo because the invoicing entity and the delivery point
+// are routinely different addresses — and when their states differ it is the ship-to
+// state that drives CGST/SGST vs IGST, while this GSTIN is what prints on the invoice.
+export interface CustomerBillTo {
+  id: string;
+  bill_to_code: string;
+  entity_name: string | null;
+  b1_bill_to_code: string | null;      // B1 business-partner address name
+  address: string | null;
+  address_type: string[] | null;
+  street: string | null;
+  block: string | null;
+  city: string | null;
+  zip_code: string | null;
+  state: string | null;
+  country: string | null;
+  gst_regn_no: string | null;
+  gst_type: string[] | null;
+  poc_name: string | null;
+  poc_email: string | null;
+  poc_phone: string | null;
+  mapping_status: string;
+  is_active: boolean;
+}
+
 export interface CustomerDetail extends TradingPartner {
   sku_mappings: CustomerSkuMapping[];
   ship_to_mappings: CustomerShipTo[];
+  bill_to_mappings: CustomerBillTo[];
 }
 
 export interface MasterDataSyncResult {
@@ -311,4 +338,46 @@ export interface B1LogListItem {
 export interface B1LogDetail extends B1LogListItem {
   request_payload: Record<string, unknown> | null;
   response_payload: Record<string, unknown> | null;
+}
+
+// Mirrors app/schemas/api.py InvoiceResponse / InvoiceLineItemResponse.
+// Invoices are pushed to us by SAP (POST /api/invoices); one PO can carry several,
+// one per partial dispatch.
+export interface InvoiceLineItem {
+  id: string;
+  b1_item_code: string | null;
+  description: string | null;
+  hsn_code: string | null;
+  qty: string;
+  uom: string | null;
+  unit_price: string | null;
+  taxable_amount: string | null;
+  cgst_amount: string | null;
+  sgst_amount: string | null;
+  igst_amount: string | null;
+  line_total: string | null;
+}
+
+export interface Invoice {
+  id: string;
+  po_id: string;
+  asn_id: string | null;
+  invoice_number: string;
+  invoice_date: string;
+  b1_invoice_doc_entry: number | null;
+  b1_invoice_doc_num: number | null;
+  irn: string | null;
+  eway_bill_number: string | null;
+  subtotal_amount: string | null;
+  cgst_amount: string | null;
+  sgst_amount: string | null;
+  igst_amount: string | null;
+  round_off: string | null;
+  grand_total: string | null;
+  status: string;
+  created_at: string;
+  asn_number: string | null;
+  asn_status: string | null;
+  outbound_status: string | null;
+  line_items: InvoiceLineItem[];
 }

@@ -713,8 +713,134 @@ class CustomerShipToItem(BaseModel):
     is_active: bool
 
 
+# ── Bill-to Mappings ──────────────────────────────────────────────────────────
+# Mirrors the ship-to shapes. Kept as a separate set rather than a `type` flag on
+# ship-to because the two carry different B1 targets (warehouse vs BP address) and
+# different tax roles: ship-to state decides CGST/SGST vs IGST, bill-to GSTIN is what
+# prints on the invoice.
+
+class BillToMappingResponse(BaseModel):
+    id: uuid.UUID
+    trading_partner_id: uuid.UUID
+    partner_code: str
+    buyer_bill_to_code: str
+    buyer_entity_name: str | None
+    b1_bill_to_code: str | None
+    mapping_status: str
+    is_active: bool
+    address_line: str | None
+    address_type: list[str] | None
+    street: str | None
+    block: str | None
+    city: str | None
+    zip_code: str | None
+    state: str | None
+    country: str | None
+    gst_registration_no: str | None
+    gst_type: list[str] | None
+    poc_name: str | None
+    poc_email: str | None
+    poc_phone: str | None
+
+    model_config = {"from_attributes": True}
+
+
+class BillToMappingUpdate(BaseModel):
+    """
+    Ops edit of one bill-to. Only `b1_bill_to_code`, `is_active` and the POC fields are
+    writable — address and GST data is owned by `POST /bill-to/sync`. Identity and
+    sync-owned fields are accepted so a GET -> edit -> PUT round-trip works, but
+    *changing* them is rejected rather than silently dropped.
+    """
+    id: uuid.UUID | None = None
+    trading_partner_id: uuid.UUID | None = None
+    partner_code: str | None = None
+    buyer_bill_to_code: str | None = None
+    mapping_status: str | None = None
+    # Sync-owned; accepted for round-trip, not writable here.
+    buyer_entity_name: str | None = None
+    address_line: str | None = None
+    address_type: list[str] | None = None
+    street: str | None = None
+    block: str | None = None
+    city: str | None = None
+    zip_code: str | None = None
+    state: str | None = None
+    country: str | None = None
+    gst_registration_no: str | None = None
+    gst_type: list[str] | None = None
+
+    # Writable here AND by sync — contact info drifts and ops may fix it locally.
+    poc_name: str | None = None
+    poc_email: str | None = None
+    poc_phone: str | None = None
+
+    b1_bill_to_code: str | None = Field(default=None, min_length=1, max_length=50)
+    is_active: bool | None = None
+
+    model_config = {"extra": "forbid"}
+
+
+class BillToMappingSyncItem(BaseModel):
+    """One bill-to / invoicing-address record (SAP CRD1 business-partner addresses)."""
+    # ── Accepted for GET -> sync round-trips; ignored, never written ──────────
+    id: uuid.UUID | None = None
+    trading_partner_id: uuid.UUID | None = None
+    b1_bill_to_code: str | None = None   # ops-owned mapping — set via PUT /bill-to/{id}
+    mapping_status: str | None = None
+    is_active: bool | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+    partner_code: str = Field(min_length=1, max_length=50)
+    buyer_bill_to_code: str = Field(min_length=1, max_length=100)
+    buyer_entity_name: str | None = None
+    address_line: str | None = None
+    address_type: list[str] | None = None
+    street: str | None = None
+    block: str | None = None
+    city: str | None = None
+    zip_code: str | None = None
+    state: str | None = None
+    country: str | None = None
+    gst_registration_no: str | None = None
+    gst_type: list[str] | None = None
+    poc_name: str | None = None
+    poc_email: str | None = None
+    poc_phone: str | None = None
+
+    model_config = {"extra": "forbid"}
+
+
+class BillToMappingSyncRequest(BaseModel):
+    mappings: list[BillToMappingSyncItem] = Field(min_length=1, max_length=2000)
+
+
+class CustomerBillToItem(BaseModel):
+    """Bill_to_mapping row as shown under its parent customer."""
+    id: uuid.UUID
+    bill_to_code: str
+    entity_name: str | None
+    b1_bill_to_code: str | None
+    address: str | None
+    address_type: list[str] | None
+    street: str | None
+    block: str | None
+    city: str | None
+    zip_code: str | None
+    state: str | None
+    country: str | None
+    gst_regn_no: str | None
+    gst_type: list[str] | None
+    poc_name: str | None
+    poc_email: str | None
+    poc_phone: str | None
+    mapping_status: str
+    is_active: bool
+
+
 class CustomerDetailResponse(BaseModel):
-    """One customer plus its full SKU-mapping and ship-to arrays."""
+    """One customer plus its full SKU-mapping, ship-to and bill-to arrays."""
     id: uuid.UUID
     code: str
     name: str
@@ -731,6 +857,7 @@ class CustomerDetailResponse(BaseModel):
     created_at: datetime
     sku_mappings: list[CustomerSkuMappingItem]
     ship_to_mappings: list[CustomerShipToItem]
+    bill_to_mappings: list[CustomerBillToItem]
 
 
 # ── Inbox (raw messages / email PO view) ──────────────────────────────────────
@@ -844,5 +971,170 @@ class B1LogDetail(BaseModel):
     error_message: str | None
     duration_ms: int | None
     created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+# ── Invoices (EDI 810) — pushed to us by SAP B1 ────────────────────────────────
+# SAP owns invoice creation: it posts A/R Invoices against the Sales Order we
+# created from the retailer PO, then pushes them here. This mirrors the master-data
+# direction of travel (SAP POSTs, we store) and replaces polling B1 as the primary
+# path — polling remains as a slow backup so a failed push is never silent.
+#
+# One PO can carry many invoices (partial dispatches), which is why the link is
+# EdiInvoice.po_id -> edi_purchase_orders and not the other way round.
+
+class InvoiceLineItemPush(BaseModel):
+    """
+    One line of an A/R Invoice as SAP sends it.
+
+    `buyer_sku` and `po_line_number` are both optional but one of them makes the line
+    traceable back to the originating PO line (po_line_id). Without either we still
+    store the line, but quantity-vs-ordered validation cannot run on it.
+    """
+    b1_item_code: str = Field(min_length=1, max_length=50)
+    qty: Decimal = Field(gt=0)
+
+    buyer_sku: str | None = Field(default=None, max_length=100)
+    po_line_number: int | None = None
+
+    description: str | None = Field(default=None, max_length=500)
+    hsn_code: str | None = Field(default=None, max_length=10)
+    uom: str | None = Field(default=None, max_length=20)
+    unit_price: Decimal | None = None
+    taxable_amount: Decimal | None = None
+    cgst_rate: Decimal | None = None
+    cgst_amount: Decimal | None = None
+    sgst_rate: Decimal | None = None
+    sgst_amount: Decimal | None = None
+    igst_rate: Decimal | None = None
+    igst_amount: Decimal | None = None
+    cess_rate: Decimal | None = None
+    cess_amount: Decimal | None = None
+    line_total: Decimal | None = None
+
+    # Carried onto the ASN line when the 856 is built from this invoice.
+    batch_number: str | None = Field(default=None, max_length=100)
+    expiry_date: date | None = None
+
+    model_config = {"extra": "forbid"}
+
+
+class InvoicePush(BaseModel):
+    """
+    One A/R Invoice from SAP.
+
+    Identifying the PO: send either `b1_sales_order_doc_entry` (B1's own key for the
+    Sales Order we created) or `partner_code` + `po_number` (the retailer's PO number).
+    DocEntry is preferred — it cannot drift. At least one form is required; the route
+    rejects an invoice that carries neither.
+    """
+    invoice_number: str = Field(min_length=1, max_length=100)
+    invoice_date: date
+    line_items: list[InvoiceLineItemPush] = Field(min_length=1, max_length=500)
+
+    # ── PO identification (at least one form required) ────────────────────────
+    b1_sales_order_doc_entry: int | None = None
+    partner_code: str | None = Field(default=None, max_length=50)
+    po_number: str | None = Field(default=None, max_length=200)
+
+    b1_invoice_doc_entry: int | None = None
+    b1_invoice_doc_num: int | None = None
+
+    # India e-invoicing — populated by B1 after IRP submission. Usually absent on the
+    # first push and filled in by a later re-push of the same invoice_number.
+    irn: str | None = Field(default=None, max_length=200)
+    eway_bill_number: str | None = Field(default=None, max_length=50)
+    eway_bill_date: date | None = None
+
+    subtotal_amount: Decimal | None = None
+    cgst_amount: Decimal | None = None
+    sgst_amount: Decimal | None = None
+    igst_amount: Decimal | None = None
+    cess_amount: Decimal | None = None
+    round_off: Decimal | None = None
+    grand_total: Decimal | None = None
+
+    # ── Shipment details, carried onto the ASN ────────────────────────────────
+    shipment_date: date | None = None
+    carrier: str | None = Field(default=None, max_length=100)
+    tracking_number: str | None = Field(default=None, max_length=200)
+
+    model_config = {"extra": "forbid"}
+
+
+class InvoicePushRequest(BaseModel):
+    invoices: list[InvoicePush] = Field(min_length=1, max_length=500)
+
+
+class InvoicePushResultItem(BaseModel):
+    """Per-invoice outcome, so a partial batch failure is actionable."""
+    invoice_number: str
+    outcome: str          # CREATED | UPDATED | SKIPPED | ERROR
+    invoice_id: uuid.UUID | None = None
+    po_number: str | None = None
+    asn_number: str | None = None
+    asn_dispatched: bool = False
+    issues: list[str] = []
+
+
+class InvoicePushResult(BaseModel):
+    created: int
+    updated: int
+    skipped: int
+    errors: list[str] = []
+    results: list[InvoicePushResultItem] = []
+
+
+class InvoiceAsnActionResponse(BaseModel):
+    """Result of a manual ASN send from the Invoices tab."""
+    invoice_id: uuid.UUID
+    asn_number: str
+    queued: bool
+    validation_override: bool
+    message: str
+
+
+class InvoiceLineItemResponse(BaseModel):
+    id: uuid.UUID
+    b1_item_code: str | None
+    description: str | None
+    hsn_code: str | None
+    qty: Decimal
+    uom: str | None
+    unit_price: Decimal | None
+    taxable_amount: Decimal | None
+    cgst_amount: Decimal | None
+    sgst_amount: Decimal | None
+    igst_amount: Decimal | None
+    line_total: Decimal | None
+
+    model_config = {"from_attributes": True}
+
+
+class InvoiceResponse(BaseModel):
+    id: uuid.UUID
+    po_id: uuid.UUID
+    asn_id: uuid.UUID | None
+    invoice_number: str
+    invoice_date: date
+    b1_invoice_doc_entry: int | None
+    b1_invoice_doc_num: int | None
+    irn: str | None
+    eway_bill_number: str | None
+    subtotal_amount: Decimal | None
+    cgst_amount: Decimal | None
+    sgst_amount: Decimal | None
+    igst_amount: Decimal | None
+    round_off: Decimal | None
+    grand_total: Decimal | None
+    status: str
+    created_at: datetime
+
+    # Denormalised for the PO-detail Invoices tab, so it needs no extra calls.
+    asn_number: str | None = None
+    asn_status: str | None = None
+    outbound_status: str | None = None
+    line_items: list[InvoiceLineItemResponse] = []
 
     model_config = {"from_attributes": True}

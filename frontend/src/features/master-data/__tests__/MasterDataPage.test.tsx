@@ -77,6 +77,29 @@ const customerDetail: CustomerDetail = {
       is_active: true,
     },
   ],
+  bill_to_mappings: [
+    {
+      id: "bt-1",
+      bill_to_code: "BL-HO",
+      entity_name: "Blink Commerce Private Limited",
+      b1_bill_to_code: "BILLTO-HO",
+      address: "6th Floor, Tower A, Gurugram 122002",
+      address_type: ["BILL_TO"],
+      street: "Tower A",
+      block: "Sector 32",
+      city: "Gurugram",
+      zip_code: "122002",
+      state: "Haryana",
+      country: "India",
+      gst_regn_no: "06AAECG1234K1Z3",
+      gst_type: ["Regular"],
+      poc_name: "Accounts Payable",
+      poc_email: "ap@blinkit.com",
+      poc_phone: "+919812345699",
+      mapping_status: "MANUALLY_MAPPED",
+      is_active: true,
+    },
+  ],
 };
 
 const item: MaterialMaster = {
@@ -144,6 +167,24 @@ describe("MasterDataPage", () => {
     await user.click(screen.getByRole("button", { name: /ship-to addresses/i }));
     expect(await screen.findByText("BL-MUM-001")).toBeInTheDocument();
     expect(screen.getByText("Maharashtra")).toBeInTheDocument();
+  });
+
+  it("shows bill-to addresses on their own sub-tab, separate from ship-to", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<MasterDataPage />);
+
+    await user.click(await screen.findByText("BLINKIT"));
+    await waitFor(() => expect(mockFetchCustomerDetail).toHaveBeenCalledWith("cust-1"));
+
+    await user.click(screen.getByRole("button", { name: /bill-to addresses/i }));
+
+    expect(await screen.findByText("BL-HO")).toBeInTheDocument();
+    expect(screen.getByText("Blink Commerce Private Limited")).toBeInTheDocument();
+    // The billing GSTIN is a different registration from the ship-to one — that
+    // distinction is the whole reason bill-to is a separate table.
+    expect(screen.getByText("06AAECG1234K1Z3")).toBeInTheDocument();
+    // Ship-to rows must not bleed into this tab.
+    expect(screen.queryByText("BL-MUM-001")).not.toBeInTheDocument();
   });
 
   it("renders item master rows using the Item_master field names", async () => {

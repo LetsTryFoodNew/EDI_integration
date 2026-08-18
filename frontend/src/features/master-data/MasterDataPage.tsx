@@ -17,7 +17,7 @@ import { TableSkeleton } from "@/components/shared/LoadingSkeleton";
 import EmptyState from "@/components/shared/EmptyState";
 import DateDisplay from "@/components/shared/DateDisplay";
 import { fetchCustomers, fetchCustomerDetail, fetchItems } from "./api";
-import type { TradingPartner, CustomerSkuMapping, CustomerShipTo } from "@/types";
+import type { TradingPartner, CustomerSkuMapping, CustomerShipTo, CustomerBillTo } from "@/types";
 
 // ── formatters ───────────────────────────────────────────────────────────────
 
@@ -176,8 +176,75 @@ function ShipToTable({ rows }: { rows: CustomerShipTo[] }) {
   );
 }
 
+function BillToTable({ rows }: { rows: CustomerBillTo[] }) {
+  if (!rows.length) {
+    return (
+      <p className="text-xs text-muted-foreground italic py-3">
+        No bill-to addresses for this customer yet. SAP pushes these via
+        POST /api/master-data/bill-to/sync.
+      </p>
+    );
+  }
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="border-b text-muted-foreground">
+            <th className="text-left font-medium py-2 pr-4">Bill-to Code</th>
+            <th className="text-left font-medium py-2 pr-4">Address</th>
+            <th className="text-left font-medium py-2 pr-4">City</th>
+            <th className="text-left font-medium py-2 pr-4">State</th>
+            <th className="text-left font-medium py-2 pr-4">Zip</th>
+            <th className="text-left font-medium py-2 pr-4">GSTIN</th>
+            <th className="text-left font-medium py-2 pr-4">GST Type</th>
+            <th className="text-left font-medium py-2 pr-4">B1 Bill-to</th>
+            <th className="text-left font-medium py-2 pr-4">POC</th>
+            <th className="text-left font-medium py-2">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((b) => (
+            <tr key={b.id} className="border-b last:border-0 hover:bg-muted/40">
+              <td className="py-2 pr-4 font-mono">{b.bill_to_code}</td>
+              <td className="py-2 pr-4 max-w-[240px]">
+                <p className="truncate" title={b.address ?? undefined}>
+                  {dash(b.address ?? b.street)}
+                </p>
+                {b.entity_name && (
+                  <p className="text-muted-foreground text-[11px]">{b.entity_name}</p>
+                )}
+              </td>
+              <td className="py-2 pr-4">{dash(b.city)}</td>
+              <td className="py-2 pr-4">{dash(b.state)}</td>
+              <td className="py-2 pr-4 font-mono">{dash(b.zip_code)}</td>
+              <td className="py-2 pr-4 font-mono">{dash(b.gst_regn_no)}</td>
+              <td className="py-2 pr-4">
+                {b.gst_type?.length ? b.gst_type.join(", ") : <span className="text-muted-foreground">—</span>}
+              </td>
+              <td className="py-2 pr-4 font-mono">{dash(b.b1_bill_to_code)}</td>
+              <td className="py-2 pr-4">
+                {b.poc_name ? (
+                  <>
+                    <p>{b.poc_name}</p>
+                    <p className="text-muted-foreground text-[11px]">
+                      {[b.poc_phone, b.poc_email].filter(Boolean).join(" · ")}
+                    </p>
+                  </>
+                ) : (
+                  <span className="text-muted-foreground">—</span>
+                )}
+              </td>
+              <td className="py-2"><ActiveBadge active={b.is_active} /></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function CustomerDetailPanel({ customerId }: { customerId: string }) {
-  const [view, setView] = useState<"sku" | "shipto">("sku");
+  const [view, setView] = useState<"sku" | "shipto" | "billto">("sku");
   const { data, isLoading, isError } = useQuery({
     queryKey: ["master-data", "customer", customerId],
     queryFn: () => fetchCustomerDetail(customerId),
@@ -211,7 +278,7 @@ function CustomerDetailPanel({ customerId }: { customerId: string }) {
         <div><span className="text-muted-foreground">PAN: </span><span className="font-mono">{dash(data.pan_card)}</span></div>
       </div>
 
-      {/* Sub-tabs: SKU mappings | Ship-to */}
+      {/* Sub-tabs: SKU mappings | Ship-to | Bill-to */}
       <div className="flex gap-1 border-b">
         <button
           onClick={() => setView("sku")}
@@ -233,13 +300,21 @@ function CustomerDetailPanel({ customerId }: { customerId: string }) {
         >
           Ship-to Addresses ({data.ship_to_mappings.length})
         </button>
+        <button
+          onClick={() => setView("billto")}
+          className={`px-3 py-1.5 text-xs font-medium border-b-2 -mb-px transition-colors ${
+            view === "billto"
+              ? "border-primary text-foreground"
+              : "border-transparent text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          Bill-to Addresses ({data.bill_to_mappings.length})
+        </button>
       </div>
 
-      {view === "sku" ? (
-        <SkuMappingsTable rows={data.sku_mappings} />
-      ) : (
-        <ShipToTable rows={data.ship_to_mappings} />
-      )}
+      {view === "sku" && <SkuMappingsTable rows={data.sku_mappings} />}
+      {view === "shipto" && <ShipToTable rows={data.ship_to_mappings} />}
+      {view === "billto" && <BillToTable rows={data.bill_to_mappings} />}
     </div>
   );
 }

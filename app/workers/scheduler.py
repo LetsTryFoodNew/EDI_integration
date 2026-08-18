@@ -29,7 +29,10 @@ settings = get_settings()
 INGEST_INTERVAL_SECONDS = 120    # email ingest: every 2 minutes
 API_POLL_INTERVAL_SECONDS = 300  # API polling:  every 5 minutes
 SAP_PUSH_INTERVAL_SECONDS = 60   # SAP push:     every 1 minute
-B1_OUTBOUND_INTERVAL_SECONDS = 300  # B1 delivery/invoice poll: every 5 minutes
+B1_OUTBOUND_INTERVAL_SECONDS = 300  # 855 ACK trigger: every 5 minutes
+# Deliveries/invoices are pushed by SAP to POST /api/invoices; this poll is only the
+# backup for a push that never arrived, so it runs hourly rather than every 5 minutes.
+B1_BACKUP_POLL_INTERVAL_SECONDS = 3600
 OUTBOUND_RETRY_INTERVAL_SECONDS = 120  # retry pending outbound: every 2 minutes
 OUTBOUND_ACK_INTERVAL_SECONDS = 60    # ACK trigger: every 1 minute
 INGEST_QUEUE_NAME = "ingest"
@@ -139,6 +142,19 @@ def _enqueue_poll_b1_outbound(outbound_queue: Queue) -> None:
     log.info("scheduler.poll_b1_outbound_enqueued", job_id=job.id)
 
 
+def _enqueue_poll_b1_documents_backup(outbound_queue: Queue) -> None:
+    """Enqueue the hourly delivery/invoice poll that backstops the SAP push path."""
+    from app.workers.jobs import poll_b1_documents_backup_job
+
+    job = outbound_queue.enqueue(
+        poll_b1_documents_backup_job,
+        job_timeout=600,
+        result_ttl=3600,
+        failure_ttl=86400,
+    )
+    log.info("scheduler.poll_b1_documents_backup_enqueued", job_id=job.id)
+
+
 def _enqueue_retry_pending_outbound(outbound_queue: Queue) -> None:
     """Re-enqueue outbound messages whose next_retry_at has passed."""
     from app.workers.jobs import retry_pending_outbound_job
@@ -217,17 +233,29 @@ def build_scheduler() -> BlockingScheduler:
     )
     log.info("scheduler.sap_push_registered", interval_s=SAP_PUSH_INTERVAL_SECONDS)
 
-    # ── Outbound: ACK + ASN + Invoice polling ─────────────────────────────────
+    # ── Outbound: 855 ACK trigger ─────────────────────────────────────────────
     scheduler.add_job(
         _enqueue_poll_b1_outbound,
         trigger=IntervalTrigger(seconds=B1_OUTBOUND_INTERVAL_SECONDS),
         args=[outbound_queue],
         id="poll_b1_outbound",
-        name="B1 outbound poll — ACKs, ASNs, Invoices",
+        name="B1 outbound — 855 ACK trigger",
         replace_existing=True,
         misfire_grace_time=60,
     )
     log.info("scheduler.b1_outbound_registered", interval_s=B1_OUTBOUND_INTERVAL_SECONDS)
+
+    # ── Outbound: delivery/invoice poll (backup for the SAP push path) ────────
+    scheduler.add_job(
+        _enqueue_poll_b1_documents_backup,
+        trigger=IntervalTrigger(seconds=B1_BACKUP_POLL_INTERVAL_SECONDS),
+        args=[outbound_queue],
+        id="poll_b1_documents_backup",
+        name="B1 delivery/invoice poll — backup for SAP push",
+        replace_existing=True,
+        misfire_grace_time=300,
+    )
+    log.info("scheduler.b1_backup_poll_registered", interval_s=B1_BACKUP_POLL_INTERVAL_SECONDS)
 
     # ── Outbound: retry pending messages ──────────────────────────────────────
     scheduler.add_job(

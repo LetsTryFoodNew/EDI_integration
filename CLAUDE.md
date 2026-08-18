@@ -145,6 +145,7 @@ We are building a **custom EDI (Electronic Data Interchange) middleware** that:
 | Frontend tables | **TanStack Table v8** | For PO lists, master data grids |
 | Frontend HTTP client | **axios** with interceptors for auth | |
 | PDF parsing | **pdfplumber**, **camelot-py** | Best Python PDF table extractors |
+| PDF generation | **reportlab** | GST tax invoices for download/email. Pure Python — no cairo/pango system libs in the image, unlike weasyprint |
 | Excel parsing | **openpyxl**, **pandas** | Standard |
 | Email | **google-api-python-client** (Gmail API) | Not IMAP |
 | Web scraping | **Playwright** (not Selenium) | More reliable |
@@ -567,8 +568,9 @@ Deliverables:
 
 Deliverables:
 1. **855 PO Acknowledgement**: after SAP_CONFIRMED, send ack back to partner. Channel per partner: API call for API partners, formatted email reply for email partners.
-2. **856 ASN**: triggered when a B1 Delivery is created against the Sales Order. We poll B1 for new Deliveries linked to our Sales Orders, OR (better) provide a small B1 extension/UDF event hook. **Start with polling.**
-3. **810 Invoice**: triggered when a B1 A/R Invoice is created. Same polling approach.
+2. **810 Invoice — SAP pushes, we do not poll.** *(Revised 2026-08-11; supersedes the polling-first design below.)* SAP posts each A/R Invoice to `POST /api/invoices` as it is raised. Same direction of travel as master data and for the same reason: Service Layer sessions are licensed and capped (section 7), so having SAP push removes a recurring read against a scarce resource and delivers the invoice in seconds rather than on the next poll tick. Idempotent on `invoice_number`, so a re-push (typically to add the IRN once the IRP responds) updates rather than duplicates. Contract: `docs/sap-invoice-api.md`.
+3. **856 ASN — one per invoice, raised automatically.** Receiving an invoice builds its ASN and hands it to the outbound registry, which resolves the channel from the partner (Zepto/Blinkit over API, Swiggy and other mail partners over email). Dispatch is automatic **only when the invoice passes validation** — header total reconciles with its lines within ₹1.00, and cumulative invoiced qty does not exceed the ordered qty across all invoices on that PO. A failing invoice is stored and **held** in the exceptions queue rather than sent, because an ASN cannot be quietly retracted once the retailer has it.
+4. **Polling survives as a backup only.** `poll_b1_deliveries` / `poll_b1_invoices` still run, on an hourly cadence (`B1_BACKUP_POLL_INTERVAL_SECONDS`), so a push that fails and is never retried does not vanish silently — the same failure mode that let the Zepto `days=1` bug run undetected for two weeks. Both paths converge on the same idempotent upsert. The 855 ACK trigger stays on the fast 5-minute cadence; it is SLA-bound and has no push equivalent.
 4. **Credit Note / Return (for RTV — the 1,420 RTV emails)**: dedicated workflow in `app/workflows/rtv_flow.py`. Inbound RTV email → parse → match to original PO/Invoice → create B1 Return or Credit Memo → optionally notify partner.
 5. `edi_outbound_messages` table tracks all outbound docs with retry, status, ack_received_at.
 6. Per-partner outbound formatters (e.g., Blinkit ASN JSON vs Swiggy ASN email PDF).

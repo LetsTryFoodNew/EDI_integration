@@ -1,7 +1,7 @@
 # Master Data API — SAP B1 Integration Guide
 
 **Audience:** SAP Business One integration team
-**Purpose:** push Customer, Item Master, SKU Mapping and Ship-to master data from SAP B1 into the EDI middleware, and read back what landed.
+**Purpose:** push Customer, Item Master, SKU Mapping, Ship-to and Bill-to master data from SAP B1 into the EDI middleware, and read back what landed.
 **Version:** 2.0 — 2026-07-18
 
 Every request and response example in this document was executed against a running instance. The outputs shown are actual responses, not illustrations.
@@ -20,10 +20,11 @@ Every request and response example in this document was executed against a runni
 8. [Item Master](#8-item-master)
 9. [SKU Mapping](#9-sku-mapping)
 10. [Ship-to](#10-ship-to)
-11. [Integration sequence](#11-integration-sequence)
-12. [Smoke test](#12-smoke-test)
-13. [Open question for SAP](#13-open-question-for-sap)
-14. [Support](#14-support)
+11. [Bill-to](#11-bill-to)
+12. [Integration sequence](#12-integration-sequence)
+13. [Smoke test](#13-smoke-test)
+14. [Open question for SAP](#14-open-question-for-sap)
+15. [Support](#15-support)
 
 ---
 
@@ -47,6 +48,7 @@ Push frequency is your choice — a nightly full push or on-change deltas both w
 | **Item Master** | Your products (mirrors B1 `OITM`) | `item_code` |
 | **SKU Mapping** | Retailer's SKU code → your item code | (`partner_code`, `buyer_sku`) |
 | **Ship-to** | Retailer delivery locations | (`partner_code`, `buyer_whs_code`) |
+| **Bill-to** | Retailer invoicing entities | (`partner_code`, `buyer_bill_to_code`) |
 
 ---
 
@@ -120,6 +122,7 @@ curl -s "$BASE/auth/me" -H "Authorization: Bearer $TOKEN"
 | Item Master | `POST /api/master-data/materials/sync` | `GET /api/master-data/materials` |
 | SKU Mapping | `POST /api/master-data/sku-mappings/sync` | `GET /api/master-data/sku-mappings` |
 | Ship-to | `POST /api/master-data/ship-to/sync` | `GET /api/master-data/ship-to` |
+| Bill-to | `POST /api/master-data/bill-to/sync` | `GET /api/master-data/bill-to` |
 
 **Exist, but for our operations team — not part of your integration:**
 
@@ -129,6 +132,7 @@ curl -s "$BASE/auth/me" -H "Authorization: Bearer $TOKEN"
 | `POST /api/master-data/materials` | Add one item manually |
 | `PUT /api/master-data/materials/{id}` | Edit one item |
 | `PUT /api/master-data/ship-to/{id}` | Assign a DC to a B1 warehouse |
+| `PUT /api/master-data/bill-to/{id}` | Assign a billing entity to a B1 BP address |
 
 There is deliberately **no** `PUT` for SKU mappings — see [§9.3](#93-why-there-is-no-put).
 
@@ -152,6 +156,7 @@ Without it the body arrives as plain text and you get `415`. **In Postman this i
 | `/materials/sync` | `items` |
 | `/sku-mappings/sync` | `mappings` |
 | `/ship-to/sync` | `mappings` |
+| `/bill-to/sync` | `mappings` |
 
 Maximum **2000 rows** per request. Split larger loads into pages — the endpoints are idempotent, so page boundaries are safe.
 
@@ -331,12 +336,13 @@ Required: `code`, `name`. `status` may also be sent as `is_active`.
 
 `GET /api/master-data/partners` — optional `is_active`, `limit`, `offset`.
 
-`GET /api/master-data/partners/{id}` — one customer **plus its full SKU-mapping and ship-to arrays** in a single call. The quickest way to confirm a push landed:
+`GET /api/master-data/partners/{id}` — one customer **plus its full SKU-mapping, ship-to and bill-to arrays** in a single call. The quickest way to confirm a push landed:
 
 ```json
 { "code": "DOCDEMO", "name": "…", "b1_card_code": "C09999",
   "sku_mappings":     [ { "buyer_sku": "DOC-SKU-1", "b1_item_code": "DOCITEM1", … } ],
-  "ship_to_mappings": [ { "dc_code": "DOC-DC-1", "city": "Mumbai", … } ] }
+  "ship_to_mappings": [ { "dc_code": "DOC-DC-1", "city": "Mumbai", … } ],
+  "bill_to_mappings": [ { "bill_to_code": "DOC-HO", "city": "Gurugram", … } ] }
 ```
 
 ---
@@ -548,7 +554,80 @@ Optional: `partner_code`, `limit`, `offset`.
 
 ---
 
-## 11. Integration sequence
+## 11. Bill-to
+
+Retailer **invoicing** entities. Stored in `bill_to_mapping`.
+
+Kept separate from Ship-to because the two are routinely different addresses: goods go
+to a distribution centre, the invoice goes to the retailer's registered office. When
+they sit in different states, both are needed — the **ship-to** state decides
+CGST/SGST vs IGST, while the **bill-to** GSTIN is what prints on the invoice as the
+buyer's registration.
+
+The B1 target differs too: a delivery address resolves to a warehouse (`WhsCode`); a
+billing address resolves to an address name on the Business Partner. Hence
+`b1_bill_to_code` here rather than `b1_whs_code`.
+
+### 11.1 Push — `POST /api/master-data/bill-to/sync`
+
+```json
+{ "mappings": [
+  { "partner_code": "DOCDEMO",
+    "buyer_bill_to_code": "DOC-HO",
+    "buyer_entity_name": "Doc Demo Commerce Private Limited",
+    "address_line": "6th Floor, Tower A, Gurugram 122002",
+    "address_type": ["BILL_TO"],
+    "street": "Tower A, Cyber Hub",
+    "block": "Sector 32",
+    "city": "Gurugram",
+    "zip_code": "122002",
+    "state": "Haryana",
+    "country": "India",
+    "gst_registration_no": "06AAECG1234K1Z3",
+    "gst_type": ["Regular"],
+    "poc_name": "Accounts Payable",
+    "poc_email": "ap@docdemo.in",
+    "poc_phone": "+919812345699" }
+]}
+```
+→ `{"created": 1, "updated": 0, "skipped": 0, "errors": []}`
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `partner_code` | string(50) | **yes** | Customer **code** |
+| `buyer_bill_to_code` | string(100) | **yes** | The retailer's billing entity code |
+| `buyer_entity_name` | string(500) | no | Legal name on the invoice |
+| `address_line` | string(500) | no | Full address as one line |
+| `address_type` | string[] | no | e.g. `["BILL_TO"]` |
+| `street` | string(255) | no | |
+| `block` | string(100) | no | |
+| `city` | string(100) | no | |
+| `zip_code` | string(10) | no | **String** — leading zeros matter |
+| `state` | string(100) | no | |
+| `country` | string(50) | no | |
+| `gst_registration_no` | string(15) | no | GSTIN **of the billing entity** |
+| `gst_type` | string[] | no | e.g. `["Regular"]` |
+| `poc_name` | string(255) | no | Accounts-payable contact |
+| `poc_email` | string(255) | no | |
+| `poc_phone` | string(20) | no | String — keep the `+91` prefix |
+
+Natural key: **(`partner_code`, `buyer_bill_to_code`)**.
+
+**Rules**
+
+- Creates and updates.
+- Sync writes address and GST fields **only**. It never touches `b1_bill_to_code` — that
+  assignment is an operations decision on our side, so re-syncing cannot undo it.
+- New entities arrive unmapped and are queued for our team.
+- Unknown `partner_code` → row skipped and reported.
+
+### 11.2 Read — `GET /api/master-data/bill-to`
+
+Optional: `partner_code`, `limit`, `offset`.
+
+---
+
+## 12. Integration sequence
 
 Order matters, because of the references between tables:
 
@@ -560,7 +639,8 @@ Order matters, because of the references between tables:
 
 4.  POST /api/master-data/materials/sync      → items    ── must precede step 5
 5.  POST /api/master-data/sku-mappings/sync   → mappings ── needs items from step 4
-6.  POST /api/master-data/ship-to/sync        → addresses
+6.  POST /api/master-data/ship-to/sync        → delivery addresses
+7.  POST /api/master-data/bill-to/sync        → invoicing addresses
 
 7.  GET  /api/master-data/partners/{id}       → verify one customer end-to-end
 ```
@@ -571,7 +651,7 @@ For a recurring nightly push, steps 3–6 are all you need; step 2 only when onb
 
 ---
 
-## 12. Smoke test
+## 13. Smoke test
 
 ```bash
 BASE="https://<host>"
@@ -605,6 +685,12 @@ curl -s -X POST "$BASE/api/master-data/sku-mappings/sync" "${AUTH[@]}" \
        "b1_item_code":"DOCITEM1","unit_price":32.50,"margin":35.0}]}'
 # expect: {"created":1,…}
 
+# 6. Bill-to
+curl -s -X POST "$BASE/api/master-data/bill-to/sync" "${AUTH[@]}" \
+  -d '{"mappings":[{"partner_code":"DOCDEMO","buyer_bill_to_code":"DOC-HO",
+       "buyer_entity_name":"Doc Demo Commerce Private Limited","city":"Gurugram",
+       "state":"Haryana","gst_registration_no":"06AAECG1234K1Z3"}]}'
+
 # 5. Ship-to
 curl -s -X POST "$BASE/api/master-data/ship-to/sync" "${AUTH[@]}" \
   -d '{"mappings":[{"partner_code":"DOCDEMO","buyer_whs_code":"DOC-DC-1",
@@ -633,7 +719,7 @@ curl -s "$BASE/api/master-data/partners" "${AUTH[@]}" | grep DOCDEMO
 
 ---
 
-## 13. Open question for SAP
+## 14. Open question for SAP
 
 **Does a retailer operating in several states have one Business Partner, or one per state GSTIN?**
 
@@ -645,7 +731,7 @@ This is a live issue: retailers already in our system span four states with a di
 
 ---
 
-## 14. Support
+## 15. Support
 
 Report issues with:
 

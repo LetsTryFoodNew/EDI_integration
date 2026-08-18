@@ -12,6 +12,7 @@ Partners:      GET /api/master-data/partners,     PUT .../{id}, POST .../sync
 Materials:     GET /api/master-data/materials,    POST (manual add), POST .../sync
 SKU mappings:  GET /api/master-data/sku-mappings, PUT .../{id}, POST .../sync
 Ship-to:       GET /api/master-data/ship-to,      PUT .../{id}, POST .../sync
+Bill-to:       GET /api/master-data/bill-to,      PUT .../{id}, POST .../sync
 """
 from __future__ import annotations
 
@@ -24,6 +25,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from app.api.deps import get_sync_db
 from app.api.routes.auth import get_current_user
 from app.schemas.api import (
+    BillToMappingResponse,
+    BillToMappingSyncRequest,
+    BillToMappingUpdate,
+    CustomerBillToItem,
     CustomerDetailResponse,
     CustomerShipToItem,
     CustomerSkuMappingItem,
@@ -57,6 +62,7 @@ router = APIRouter(prefix="/api/master-data", tags=["Master Data"])
 # They are dropped before any write — see the round-trip note in app/schemas/api.py.
 _SYNC_READ_ONLY = {"id", "trading_partner_id", "created_at", "updated_at", "is_active"}
 _SHIP_TO_READ_ONLY = _SYNC_READ_ONLY | {"b1_whs_code", "mapping_status"}
+_BILL_TO_READ_ONLY = _SYNC_READ_ONLY | {"b1_bill_to_code", "mapping_status"}
 
 
 def _partner_write_response(partner: object) -> TradingPartnerWriteResponse:
@@ -259,12 +265,18 @@ def get_partner_detail(
     _current_user: UserResponse = Depends(get_current_user),
 ) -> CustomerDetailResponse:
     """
-    One customer plus its SKU mappings and ship-to addresses, in a single round trip.
+    One customer plus its SKU mappings, ship-to and bill-to addresses, in one round trip.
     Backs the expandable customer row on the Master Data screen.
     """
     from sqlalchemy import select
 
-    from app.models.master_data import MaterialMaster, ShipToMapping, SkuMapping, TradingPartner
+    from app.models.master_data import (
+        BillToMapping,
+        MaterialMaster,
+        ShipToMapping,
+        SkuMapping,
+        TradingPartner,
+    )
 
     partner = db.get(TradingPartner, partner_id)
     if not partner or partner.deleted_at is not None:
@@ -296,6 +308,15 @@ def get_partner_detail(
             ShipToMapping.deleted_at.is_(None),
         )
         .order_by(ShipToMapping.buyer_whs_code)
+    ).scalars().all()
+
+    bill_to_rows = db.execute(
+        select(BillToMapping)
+        .where(
+            BillToMapping.trading_partner_id == partner.id,
+            BillToMapping.deleted_at.is_(None),
+        )
+        .order_by(BillToMapping.buyer_bill_to_code)
     ).scalars().all()
 
     return CustomerDetailResponse(
@@ -355,6 +376,30 @@ def get_partner_detail(
                 is_active=s.is_active,
             )
             for s in ship_to_rows
+        ],
+        bill_to_mappings=[
+            CustomerBillToItem(
+                id=b.id,
+                bill_to_code=b.buyer_bill_to_code,
+                entity_name=b.buyer_entity_name,
+                b1_bill_to_code=b.b1_bill_to_code,
+                address=b.address_line,
+                address_type=b.address_type,
+                street=b.street,
+                block=b.block,
+                city=b.city,
+                zip_code=b.zip_code,
+                state=b.state,
+                country=b.country,
+                gst_regn_no=b.gst_registration_no,
+                gst_type=b.gst_type,
+                poc_name=b.poc_name,
+                poc_email=b.poc_email,
+                poc_phone=b.poc_phone,
+                mapping_status=str(b.mapping_status),
+                is_active=b.is_active,
+            )
+            for b in bill_to_rows
         ],
     )
 
@@ -1036,6 +1081,207 @@ def sync_ship_to(
         user_email=current_user.email,
         action="sync_ship_to",
         entity_type="ShipToMapping",
+        payload={"created": created, "updated": updated, "skipped": skipped},
+    ))
+    db.commit()
+    return MasterDataSyncResult(created=created, updated=updated, skipped=skipped, errors=errors)
+
+
+# ── Bill-to Mappings ──────────────────────────────────────────────────────────
+# Deliberately a parallel set of endpoints rather than a `type` filter on ship-to.
+# The two resolve to different B1 objects (warehouse vs business-partner address) and
+# carry different tax roles, so sharing a route would mean branching on a discriminator
+# in every handler for no gain.
+
+def _bill_to_row_to_response(m: object, partner_code: str) -> BillToMappingResponse:
+    return BillToMappingResponse(
+        id=m.id,
+        trading_partner_id=m.trading_partner_id,
+        partner_code=partner_code,
+        buyer_bill_to_code=m.buyer_bill_to_code,
+        buyer_entity_name=m.buyer_entity_name,
+        b1_bill_to_code=m.b1_bill_to_code,
+        mapping_status=str(m.mapping_status),
+        is_active=m.is_active,
+        address_line=m.address_line,
+        address_type=m.address_type,
+        street=m.street,
+        block=m.block,
+        city=m.city,
+        zip_code=m.zip_code,
+        state=m.state,
+        country=m.country,
+        gst_registration_no=m.gst_registration_no,
+        gst_type=m.gst_type,
+        poc_name=m.poc_name,
+        poc_email=m.poc_email,
+        poc_phone=m.poc_phone,
+    )
+
+
+@router.get("/bill-to", response_model=PaginatedResponse[BillToMappingResponse])
+def list_bill_to(
+    partner_code: str | None = Query(None),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_sync_db),
+    _current_user: UserResponse = Depends(get_current_user),
+) -> PaginatedResponse[BillToMappingResponse]:
+    from sqlalchemy import func, select
+
+    from app.models.master_data import BillToMapping, TradingPartner
+
+    q = (
+        select(BillToMapping, TradingPartner.code.label("partner_code"))
+        .join(TradingPartner, BillToMapping.trading_partner_id == TradingPartner.id)
+        .where(TradingPartner.deleted_at.is_(None))
+        .where(BillToMapping.deleted_at.is_(None))
+        .order_by(TradingPartner.code, BillToMapping.buyer_bill_to_code)
+    )
+    if partner_code:
+        q = q.where(TradingPartner.code == partner_code)
+
+    total = db.execute(select(func.count()).select_from(q.subquery())).scalar_one()
+    rows = db.execute(q.limit(limit).offset(offset)).all()
+
+    items = [_bill_to_row_to_response(row.BillToMapping, row.partner_code) for row in rows]
+    return PaginatedResponse(items=items, total=total, limit=limit, offset=offset)
+
+
+@router.put("/bill-to/{mapping_id}", response_model=BillToMappingResponse)
+def update_bill_to(
+    mapping_id: uuid.UUID,
+    body: BillToMappingUpdate,
+    request: Request,
+    db: Session = Depends(get_sync_db),
+    current_user: UserResponse = Depends(get_current_user),
+) -> BillToMappingResponse:
+    """Ops-side manual mapping of a buyer billing entity to a B1 BP address name."""
+    from app.models._enums import MappingStatus
+    from app.models.audit_log import AuditLog
+    from app.models.master_data import BillToMapping, TradingPartner
+
+    mapping = db.get(BillToMapping, mapping_id)
+    if not mapping:
+        raise HTTPException(status_code=404, detail="Bill-to mapping not found")
+
+    _reject_immutable_changes(
+        body, mapping,
+        {"id": "id", "buyer_bill_to_code": "buyer_bill_to_code"},
+        reason="This field identifies the bill-to entity and cannot be changed here.",
+    )
+    # Address and GST fields are owned by POST /bill-to/sync. Accepting them on a
+    # round-trip PUT is fine, but silently discarding a *changed* value would look
+    # like a successful edit that did nothing.
+    _reject_immutable_changes(
+        body, mapping,
+        {
+            "buyer_entity_name": "buyer_entity_name",
+            "address_line": "address_line",
+            "street": "street", "block": "block", "city": "city",
+            "zip_code": "zip_code", "state": "state", "country": "country",
+            "gst_registration_no": "gst_registration_no",
+        },
+        reason=(
+            "Address and GST fields come from SAP via POST /api/master-data/bill-to/sync. "
+            "Change them in SAP and re-sync."
+        ),
+    )
+
+    _WRITABLE = ("b1_bill_to_code", "is_active", "poc_name", "poc_email", "poc_phone")
+    if all(getattr(body, f) is None for f in _WRITABLE):
+        raise HTTPException(status_code=422, detail="No fields to update")
+
+    if body.b1_bill_to_code is not None:
+        mapping.b1_bill_to_code = body.b1_bill_to_code
+        mapping.mapping_status = MappingStatus.MANUALLY_MAPPED
+    if body.is_active is not None:
+        mapping.is_active = body.is_active
+    # POC contact info is writable both here and by sync — it drifts, ops may fix it.
+    for f in ("poc_name", "poc_email", "poc_phone"):
+        v = getattr(body, f)
+        if v is not None:
+            setattr(mapping, f, v)
+
+    db.add(AuditLog(
+        user_email=current_user.email,
+        action="update_bill_to_mapping",
+        entity_type="BillToMapping",
+        entity_id=str(mapping_id),
+        payload=body.model_dump(
+            include={"b1_bill_to_code", "is_active", "poc_name", "poc_email", "poc_phone"},
+            exclude_none=True, mode="json",
+        ),
+        ip_address=request.client.host if request.client else None,
+    ))
+    db.flush()
+    db.commit()
+
+    partner = db.get(TradingPartner, mapping.trading_partner_id)
+    return _bill_to_row_to_response(mapping, partner.code if partner else "")
+
+
+@router.post("/bill-to/sync", response_model=MasterDataSyncResult)
+def sync_bill_to(
+    body: BillToMappingSyncRequest,
+    db: Session = Depends(get_sync_db),
+    current_user: UserResponse = Depends(get_current_user),
+) -> MasterDataSyncResult:
+    """
+    Bulk upsert bill-to / invoicing-address records pushed from SAP.
+
+    Safe to create here — a new address carries no B1 mapping yet, so it lands as
+    mapping_status=UNMAPPED and queues for ops. Only touches address / GSTIN fields;
+    never b1_bill_to_code or mapping_status, so re-syncing cannot undo an ops mapping.
+    """
+    from sqlalchemy import select
+
+    from app.models.audit_log import AuditLog
+    from app.models.master_data import BillToMapping, TradingPartner
+
+    created = updated = skipped = 0
+    errors: list[str] = []
+
+    for item in body.mappings:
+        partner = db.execute(
+            select(TradingPartner).where(
+                TradingPartner.code == item.partner_code.upper(),
+                TradingPartner.deleted_at.is_(None),
+            )
+        ).scalar_one_or_none()
+        if not partner:
+            skipped += 1
+            errors.append(f"{item.partner_code}/{item.buyer_bill_to_code}: unknown partner code")
+            continue
+
+        mapping = db.execute(
+            select(BillToMapping).where(
+                BillToMapping.trading_partner_id == partner.id,
+                BillToMapping.buyer_bill_to_code == item.buyer_bill_to_code,
+            )
+        ).scalar_one_or_none()
+
+        address_fields = item.model_dump(
+            exclude={"partner_code", "buyer_bill_to_code"} | _BILL_TO_READ_ONLY
+        )
+
+        if mapping:
+            for k, v in address_fields.items():
+                if v is not None:
+                    setattr(mapping, k, v)
+            updated += 1
+        else:
+            db.add(BillToMapping(
+                trading_partner_id=partner.id,
+                buyer_bill_to_code=item.buyer_bill_to_code,
+                **address_fields,
+            ))
+            created += 1
+
+    db.add(AuditLog(
+        user_email=current_user.email,
+        action="sync_bill_to",
+        entity_type="BillToMapping",
         payload={"created": created, "updated": updated, "skipped": skipped},
     ))
     db.commit()

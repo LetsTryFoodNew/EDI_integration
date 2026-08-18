@@ -1,0 +1,63 @@
+{
+  "invoices": [
+    {
+      "invoice_number": "DUMMY-ZEPTO-12051",
+      "invoice_date": "2026-08-11",
+      "partner_code": "ZEPTO",
+      "po_number": "P367067",
+      "b1_invoice_doc_entry": 912051,
+      "b1_invoice_doc_num": 512051,
+      "subtotal_amount": "3306.30",
+      "cgst_amount": "241.86",
+      "sgst_amount": "241.86",
+      "igst_amount": "0.00",
+      "round_off": "0.00",
+      "grand_total": "3790.02",
+      "shipment_date": "2026-08-11",
+      "carrier": "Delhivery",
+      "tracking_number": "TRK-ZEPTO-12051",
+      "line_items": [
+        {
+          "b1_item_code": "FG-103143",
+          "buyer_sku": "103143",
+          "po_line_number": 1,
+          "description": "Engage Mate For Man Deo Spray - 150g",
+          "hsn_code": "33072000",
+          "qty": "10",
+          "uom": "PC",
+          "unit_price": "244.92",
+          "taxable_amount": "2449.20",
+          "cgst_rate": "9.00",
+          "cgst_amount": "220.43",
+          "sgst_rate": "9.00",
+          "sgst_amount": "220.43",
+          "igst_rate": "0.00",
+          "igst_amount": "0.00",
+          "line_total": "2890.06",
+          "batch_number": "LTF-202608-12051",
+          "expiry_date": "2027-08-11"
+        },
+        {
+          "b1_item_code": "FG-102597",
+          "buyer_sku": "102597",
+          "po_line_number": 2,
+          "description": "Aashirvaad powder-turmeric Pouch - 100g",
+          "hsn_code": "09109100",
+          "qty": "30",
+          "uom": "PC",
+          "unit_price": "28.57",
+          "taxable_amount": "857.10",
+          "cgst_rate": "2.50",
+          "cgst_amount": "21.43",
+          "sgst_rate": "2.50",
+          "sgst_amount": "21.43",
+          "igst_rate": "0.00",
+          "igst_amount": "0.00",
+          "line_total": "899.96",
+          "batch_number": "LTF-202608-12051",
+          "expiry_date": "2027-08-11"
+        }
+      ]
+    }
+  ]
+}

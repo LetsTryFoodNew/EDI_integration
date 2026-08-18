@@ -91,6 +91,7 @@ class TradingPartner(Base):
 
     sku_mappings: Mapped[list[SkuMapping]] = relationship("SkuMapping", back_populates="trading_partner")
     ship_to_mappings: Mapped[list[ShipToMapping]] = relationship("ShipToMapping", back_populates="trading_partner")
+    bill_to_mappings: Mapped[list[BillToMapping]] = relationship("BillToMapping", back_populates="trading_partner")
     raw_messages: Mapped[list[RawMessage]] = relationship("RawMessage", back_populates="trading_partner")
     purchase_orders: Mapped[list[EdiPurchaseOrder]] = relationship("EdiPurchaseOrder", back_populates="trading_partner")
 
@@ -209,3 +210,59 @@ class ShipToMapping(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     trading_partner: Mapped[TradingPartner] = relationship("TradingPartner", back_populates="ship_to_mappings")
+
+
+class BillToMapping(Base):
+    """
+    Maps a partner's bill-to (invoicing) entity to our SAP B1 business-partner address.
+
+    Separate from ShipToMapping because in Indian GST the two are genuinely different
+    things and routinely differ: goods go to a distribution centre, the invoice goes to
+    the retailer's registered office. When their states differ it is the *ship-to* state
+    that decides CGST/SGST vs IGST (place of supply, CLAUDE.md section 8), while the
+    *bill-to* GSTIN is what prints on the invoice as the buyer's registration. Folding
+    them into one row would lose that distinction and mis-tax interstate orders.
+
+    The B1 target differs too: ship-to resolves to a warehouse (WhsCode), bill-to
+    resolves to an address name on the Business Partner, so the mapped column here is
+    `b1_bill_to_code` rather than `b1_whs_code`.
+    """
+
+    __tablename__ = "bill_to_mapping"
+    __table_args__ = (
+        UniqueConstraint("trading_partner_id", "buyer_bill_to_code", name="uq_bill_to_partner_code"),
+        Index("ix_bill_to_mapping_partner", "trading_partner_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    trading_partner_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("trading_partners.id"), nullable=False)
+    buyer_bill_to_code: Mapped[str] = mapped_column(String(100), nullable=False)  # buyer's billing entity code
+    buyer_entity_name: Mapped[str | None] = mapped_column(String(500))
+    b1_bill_to_code: Mapped[str | None] = mapped_column(String(50))               # B1 BP address name
+    mapping_status: Mapped[MappingStatus] = mapped_column(
+        Enum(MappingStatus, name="mapping_status_t", create_type=False),
+        nullable=False,
+        default=MappingStatus.UNMAPPED,
+    )
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Structured address + GSTIN synced from SAP business-partner bill-to records.
+    address_line: Mapped[str | None] = mapped_column(String(500))
+    address_type: Mapped[list[str] | None] = mapped_column(ARRAY(String(30)))
+    street: Mapped[str | None] = mapped_column(String(255))
+    block: Mapped[str | None] = mapped_column(String(100))
+    city: Mapped[str | None] = mapped_column(String(100))
+    zip_code: Mapped[str | None] = mapped_column(String(10))
+    state: Mapped[str | None] = mapped_column(String(100))
+    country: Mapped[str | None] = mapped_column(String(50))
+    gst_registration_no: Mapped[str | None] = mapped_column(String(15))
+    gst_type: Mapped[list[str] | None] = mapped_column(ARRAY(String(30)))
+    # Accounts-payable contact for this billing entity (synced from SAP, editable by ops).
+    poc_name: Mapped[str | None] = mapped_column(String(255))
+    poc_email: Mapped[str | None] = mapped_column(String(255))
+    poc_phone: Mapped[str | None] = mapped_column(String(20))
+    notes: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    trading_partner: Mapped[TradingPartner] = relationship("TradingPartner", back_populates="bill_to_mappings")

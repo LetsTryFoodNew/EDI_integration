@@ -34,6 +34,11 @@ dependencies = [
     # PDF parsing
     "pdfplumber==0.11.4",
     "camelot-py==0.11.0",
+    # PDF generation — GST tax invoices for download / email attachment.
+    # reportlab over weasyprint: pure Python with no cairo/pango system libs to
+    # install in the image, and its platypus Table handles the line-item grid
+    # and page breaks that an invoice needs.
+    "reportlab==4.2.5",
     # Excel parsing
     "openpyxl==3.1.5",
     "pandas==2.2.3",

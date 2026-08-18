@@ -5,7 +5,7 @@ from app.database import get_db
 from app import crud, schemas
 from app.models import ZeptoASNAllocation
 from app.services.blinkit import blinkit_service
-from app.services.zepto import zepto_service
+from app.services.zepto import TIER_HOSTS, resolve_tier, zepto_service
 import base64
 import httpx
 import os
@@ -352,17 +352,32 @@ async def zepto_proxy(path: str, request: Request):
       74.220.48.0/24
       74.220.56.0/24
 
+    Headers honoured from the caller:
+      X-Client-Id / X-Client-Secret — forwarded as-is (env is only a fallback)
+      X-Zepto-Env: qa | prod        — picks the upstream host (default qa)
+      X-Idempotency-Key             — forwarded when present
+
     Usage (called automatically by ZeptoService in local mode):
       GET  /api/proxy/zepto/api/v1/external/po/events?days=7
       POST /api/proxy/zepto/api/v1/external/asn
       PUT  /api/proxy/zepto/api/v1/external/po/{po_number}/amendment
     """
-    # Credentials: prefer Render env vars; fall back to headers sent by caller
-    # (ZeptoService in local mode sends them in the request headers)
-    client_id     = os.getenv("ZEPTO_CLIENT_ID", "") or request.headers.get("X-Client-Id", "")
-    client_secret = os.getenv("ZEPTO_CLIENT_SECRET", "") or request.headers.get("X-Client-Secret", "")
-    zepto_base    = "https://silkroute.zeptonow.dev"   # proxy always hits QA host
-    target_url    = f"{zepto_base}/{path.lstrip('/')}"
+    # Credentials: the CALLER's headers win; Render env vars are only a fallback.
+    #
+    # This used to be the other way round (`os.getenv(...) or header`), which meant
+    # the server's env silently replaced whatever the caller sent — bogus and empty
+    # credentials both came back HTTP 200. That made the proxy impossible to test
+    # against and masked credential errors until they surfaced in direct mode.
+    client_id     = request.headers.get("X-Client-Id", "")     or os.getenv("ZEPTO_CLIENT_ID", "")
+    client_secret = request.headers.get("X-Client-Secret", "") or os.getenv("ZEPTO_CLIENT_SECRET", "")
+
+    # Target host follows the caller's credential tier instead of being pinned to QA,
+    # so a Prod-credentialled caller is no longer forced onto the QA host (and vice
+    # versa). resolve_tier() allowlists the value — the caller cannot redirect us
+    # to an arbitrary host.
+    tier       = resolve_tier(request.headers.get("X-Zepto-Env") or os.getenv("ZEPTO_ENV"))
+    zepto_base = TIER_HOSTS[tier]
+    target_url = f"{zepto_base}/{path.lstrip('/')}"
 
     if request.query_params:
         target_url += f"?{request.query_params}"
@@ -859,24 +874,35 @@ async def zepto_health_check():
     """Test Zepto API connectivity (QA in local, Prod in production)."""
     result = await zepto_service.health_check()
     return {
-        "environment":     os.getenv("ENVIRONMENT", "local"),
-        "base_url":        zepto_service.base_url,
-        "client_id_set":   bool(zepto_service.client_id),
+        "environment":       zepto_service.env,
+        "tier":              zepto_service.tier,
+        "zepto_host":        zepto_service.base_url,
+        "effective_target":  zepto_service.effective_target,
+        "via_proxy":         zepto_service.via_proxy,
+        "client_id_set":     bool(zepto_service.client_id),
         "client_secret_set": bool(zepto_service.client_secret),
-        "connectivity":    result,
+        "connectivity":      result,
     }
 
 
 @router.get("/zepto/connection-info", tags=["Zepto API"])
 def zepto_connection_info():
     """Show current Zepto routing configuration."""
-    env = os.getenv("ENVIRONMENT", "local")
     return {
-        "environment":        env,
-        "base_url":           zepto_service.base_url,
-        "client_id_set":      bool(zepto_service.client_id),
-        "client_secret_set":  bool(zepto_service.client_secret),
-        "note": "IP whitelisting required — share your server's outbound IP with Zepto before calls will succeed",
+        "environment":       zepto_service.env,
+        "tier":              zepto_service.tier,
+        "zepto_host":        zepto_service.base_url,
+        "effective_target":  zepto_service.effective_target,
+        "via_proxy":         zepto_service.via_proxy,
+        "client_id_set":     bool(zepto_service.client_id),
+        "client_secret_set": bool(zepto_service.client_secret),
+        "notes": [
+            "ZEPTO_ENV (qa|prod) picks the host and must match the tier your "
+            "credentials were issued for — a QA pair on the Prod host returns "
+            "'Invalid Client credentials'.",
+            "ENVIRONMENT only controls Render-proxy routing, not the Zepto host.",
+            "QA is IP-whitelisted (HTTP 428 if your IP is unknown); Prod is not.",
+        ],
     }
 
 
@@ -887,22 +913,42 @@ async def get_zepto_po_events(
     po_codes: str = None,
     include_all_po_events: bool = False,
     include_line_item_details: bool = False,
-    page_size: int = 10,
+    all_pages: bool = True,
+    page_size: int = 20,
     page_number: int = 1,
 ):
     """
-    Fetch PO events from Zepto for the past `days` days.
+    Fetch PO events from Zepto for the past `days` days, NEWEST FIRST.
+
+    Paginates through every page by default. Zepto sorts oldest-first and caps
+    pageSize at 20, so the previous single-page default (page_size=10,
+    page_number=1) returned the ten OLDEST POs and hid every recent one — the
+    reason the 28 Jul test POs P368477-P368480 never appeared.
+
+    Pass all_pages=false to fetch one raw page (Zepto's own oldest-first order).
     vendor_codes and po_codes are comma-separated strings (max 10 each).
     """
-    result = await zepto_service.list_po_events(
-        days=days,
-        vendor_codes=vendor_codes.split(",") if vendor_codes else None,
-        po_codes=po_codes.split(",") if po_codes else None,
-        include_all_po_events=include_all_po_events,
-        include_line_item_details=include_line_item_details,
-        page_size=page_size,
-        page_number=page_number,
-    )
+    vendors = vendor_codes.split(",") if vendor_codes else None
+    pos     = po_codes.split(",") if po_codes else None
+
+    if all_pages:
+        result = await zepto_service.list_all_po_events(
+            days=days,
+            vendor_codes=vendors,
+            po_codes=pos,
+            include_all_po_events=include_all_po_events,
+            include_line_item_details=include_line_item_details,
+        )
+    else:
+        result = await zepto_service.list_po_events(
+            days=days,
+            vendor_codes=vendors,
+            po_codes=pos,
+            include_all_po_events=include_all_po_events,
+            include_line_item_details=include_line_item_details,
+            page_size=page_size,
+            page_number=page_number,
+        )
     if not result["success"]:
         raise HTTPException(result.get("status_code", 502), result.get("error", "Zepto API error"))
     return result

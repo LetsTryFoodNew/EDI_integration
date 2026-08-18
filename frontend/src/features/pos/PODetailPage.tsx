@@ -2,7 +2,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useParams, useNavigate } from "react-router-dom";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
-import { ArrowLeft, RotateCcw, XCircle, Loader2, ExternalLink, Pencil, Send, ShieldCheck } from "lucide-react";
+import { ArrowLeft, RotateCcw, XCircle, Loader2, ExternalLink, Pencil, Send, ShieldCheck, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -41,9 +41,9 @@ import StatusBadge from "@/components/shared/StatusBadge";
 import DateDisplay from "@/components/shared/DateDisplay";
 import MoneyDisplay from "@/components/shared/MoneyDisplay";
 import { Skeleton } from "@/components/ui/skeleton";
-import { fetchPODetail, retrySAPPush, cancelPO, updatePO, pushToSAP, revalidatePO } from "./api";
+import { fetchPODetail, fetchPOInvoices, sendInvoiceAsn, downloadInvoicePdf, retrySAPPush, cancelPO, updatePO, pushToSAP, revalidatePO } from "./api";
 import type { POUpdatePayload } from "./api";
-import type { PODetail } from "@/types";
+import type { Invoice, PODetail } from "@/types";
 
 function EditPODialog({
   po,
@@ -328,6 +328,300 @@ function B1PushTab({ po }: { po: PODetail }) {
         ))}
       </TableBody>
     </Table>
+  );
+}
+
+/**
+ * Full detail for one invoice, plus the two actions ops need from here.
+ *
+ * "Send ASN" covers both dead ends the tab surfaces: an invoice held by validation
+ * (no ASN yet — sending is an explicit override) and one whose dispatch failed
+ * (re-queue). The backend decides which applies, so the button stays a single action
+ * and its confirmation text explains what actually happened.
+ */
+function InvoiceDetailDialog({
+  invoice,
+  open,
+  onOpenChange,
+}: {
+  invoice: Invoice | null;
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+}) {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [downloading, setDownloading] = useState(false);
+
+  const sendAsn = useMutation({
+    mutationFn: () => sendInvoiceAsn(invoice!.id),
+    onSuccess: (result) => {
+      toast({
+        title: result.validation_override ? "Validation hold overridden" : "ASN queued",
+        description: `${result.asn_number} — ${result.message}`,
+      });
+      queryClient.invalidateQueries({ queryKey: ["po", invoice?.po_id, "invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["po", invoice?.po_id] });
+    },
+    onError: (err: unknown) => {
+      // A 409 here is the "already delivered and acknowledged" guard, which is the
+      // one case worth reading rather than retrying — surface the server's wording.
+      const detail =
+        (err as { response?: { data?: { error?: { message?: string } } } })?.response?.data?.error
+          ?.message ?? (err instanceof Error ? err.message : "Unknown error");
+      toast({ title: "Could not send ASN", description: detail, variant: "destructive" });
+    },
+  });
+
+  if (!invoice) return null;
+
+  const handleDownload = async () => {
+    setDownloading(true);
+    try {
+      await downloadInvoicePdf(invoice.id, invoice.invoice_number);
+    } catch {
+      toast({
+        title: "Download failed",
+        description: "Could not generate the PDF. Try again, or check the server logs.",
+        variant: "destructive",
+      });
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  const rows: [string, React.ReactNode][] = [
+    ["Invoice No.", <span key="num" className="font-mono">{invoice.invoice_number}</span>],
+    ["Invoice Date", <DateDisplay key="date" iso={invoice.invoice_date} format="dd MMM yyyy" />],
+    ["Status", invoice.status],
+    ["B1 Doc Entry", invoice.b1_invoice_doc_entry ?? "—"],
+    ["B1 Doc Num", invoice.b1_invoice_doc_num ?? "—"],
+    ["IRN", invoice.irn ? <span key="irn" className="font-mono text-xs break-all">{invoice.irn}</span> : "Pending"],
+    ["e-Way Bill", invoice.eway_bill_number ?? "—"],
+    ["ASN Number", invoice.asn_number ?? "Not raised (held)"],
+    ["Sent to partner", invoice.outbound_status ?? "Held"],
+  ];
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="min-w-max max-h-[85vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="font-mono">{invoice.invoice_number}</DialogTitle>
+        </DialogHeader>
+
+        {!invoice.asn_number && (
+          <Alert className="my-2">
+            <AlertDescription className="text-sm">
+              This invoice was held by validation, so no ASN was sent. Check the
+              Validation tab for the reason. Sending from here overrides the hold.
+            </AlertDescription>
+          </Alert>
+        )}
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-1 text-sm">
+          {rows.map(([label, value]) => (
+            <div key={label} className="flex justify-between border-b py-1.5">
+              <span className="text-muted-foreground">{label}</span>
+              <span className="text-right">{value}</span>
+            </div>
+          ))}
+        </div>
+
+        <h4 className="font-medium text-sm mt-4">Line Items</h4>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Item</TableHead>
+              <TableHead>HSN</TableHead>
+              <TableHead className="text-right">Qty</TableHead>
+              <TableHead className="text-right">Rate</TableHead>
+              <TableHead className="text-right">Taxable</TableHead>
+              <TableHead className="text-right">Tax</TableHead>
+              <TableHead className="text-right">Total</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {invoice.line_items.map((li) => {
+              // CGST+SGST and IGST are mutually exclusive, so one "Tax" column
+              // showing whichever applies is clearer than three mostly-zero ones.
+              const tax =
+                Number(li.igst_amount ?? 0) > 0
+                  ? Number(li.igst_amount)
+                  : Number(li.cgst_amount ?? 0) + Number(li.sgst_amount ?? 0);
+              return (
+                <TableRow key={li.id}>
+                  <TableCell className="text-xs">
+                    {li.description ?? li.b1_item_code ?? "—"}
+                  </TableCell>
+                  <TableCell className="text-xs">{li.hsn_code ?? "—"}</TableCell>
+                  <TableCell className="text-right">{li.qty}</TableCell>
+                  <TableCell className="text-right">
+                    {li.unit_price ? <MoneyDisplay amount={li.unit_price} /> : "—"}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    {li.taxable_amount ? <MoneyDisplay amount={li.taxable_amount} /> : "—"}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <MoneyDisplay amount={String(tax)} />
+                  </TableCell>
+                  <TableCell className="text-right">
+                    {li.line_total ? <MoneyDisplay amount={li.line_total} /> : "—"}
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+
+        <div className="flex justify-end mt-3">
+          <div className="w-64 space-y-1 text-sm">
+            {([
+              ["Taxable Value", invoice.subtotal_amount],
+              ["CGST", invoice.cgst_amount],
+              ["SGST", invoice.sgst_amount],
+              ["IGST", invoice.igst_amount],
+              ["Round Off", invoice.round_off],
+            ] as [string, string | null][])
+              .filter(([, v]) => v !== null && Number(v) !== 0)
+              .map(([label, v]) => (
+                <div key={label} className="flex justify-between">
+                  <span className="text-muted-foreground">{label}</span>
+                  <MoneyDisplay amount={v as string} />
+                </div>
+              ))}
+            <div className="flex justify-between border-t pt-1 font-medium">
+              <span>Grand Total</span>
+              {invoice.grand_total ? <MoneyDisplay amount={invoice.grand_total} /> : "—"}
+            </div>
+          </div>
+        </div>
+
+        <DialogFooter className="mt-4 gap-2">
+          <Button variant="outline" onClick={handleDownload} disabled={downloading}>
+            {downloading ? (
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+            ) : (
+              <Download className="h-4 w-4 mr-2" />
+            )}
+            Download PDF
+          </Button>
+          <Button onClick={() => sendAsn.mutate()} disabled={sendAsn.isPending}>
+            {sendAsn.isPending ? (
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+            ) : (
+              <Send className="h-4 w-4 mr-2" />
+            )}
+            {invoice.asn_number ? "Re-send ASN" : "Send ASN"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/**
+ * Invoices raised by SAP against this PO.
+ *
+ * Fetched separately rather than folded into the PO detail payload: a PO accumulates
+ * invoices over days as partial dispatches go out, and this tab needs to reflect that
+ * without re-fetching the whole PO.
+ *
+ * The ASN columns are the point of the tab — they answer "did the retailer actually
+ * get this?", which is otherwise spread across the ASN and outbound-message tables.
+ */
+function InvoicesTab({ poId }: { poId: string }) {
+  const [selected, setSelected] = useState<Invoice | null>(null);
+  const { data, isLoading, isError, error } = useQuery({
+    queryKey: ["po", poId, "invoices"],
+    queryFn: () => fetchPOInvoices(poId),
+  });
+
+  // Keep the open dialog in step with refetches — after "Send ASN" the list is
+  // invalidated, and without this the dialog would still show the pre-send state.
+  const current = selected ? data?.find((i) => i.id === selected.id) ?? selected : null;
+
+  if (isLoading)
+    return (
+      <div className="py-4 space-y-2">
+        <Skeleton className="h-9 w-full" />
+        <Skeleton className="h-9 w-full" />
+        <Skeleton className="h-9 w-full" />
+      </div>
+    );
+
+  if (isError)
+    return (
+      <Alert variant="destructive" className="my-4">
+        <AlertDescription>
+          Could not load invoices: {error instanceof Error ? error.message : "unknown error"}
+        </AlertDescription>
+      </Alert>
+    );
+
+  if (!data || data.length === 0)
+    return (
+      <p className="text-sm text-muted-foreground py-4">
+        No invoices yet. SAP posts these once an A/R Invoice is raised against the Sales Order.
+      </p>
+    );
+
+  return (
+    <>
+    <InvoiceDetailDialog
+      invoice={current}
+      open={selected !== null}
+      onOpenChange={(v) => !v && setSelected(null)}
+    />
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Invoice #</TableHead>
+          <TableHead>Date</TableHead>
+          <TableHead className="text-right">Total</TableHead>
+          <TableHead>Lines</TableHead>
+          <TableHead>IRN</TableHead>
+          <TableHead>ASN</TableHead>
+          <TableHead>Sent to partner</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {data.map((inv) => (
+          <TableRow
+            key={inv.id}
+            onClick={() => setSelected(inv)}
+            className="cursor-pointer hover:bg-muted/50"
+          >
+            <TableCell className="font-mono text-xs">{inv.invoice_number}</TableCell>
+            <TableCell>
+              <DateDisplay iso={inv.invoice_date} format="dd MMM yyyy" />
+            </TableCell>
+            <TableCell className="text-right">
+              {inv.grand_total ? <MoneyDisplay amount={inv.grand_total} /> : "—"}
+            </TableCell>
+            <TableCell>{inv.line_items.length}</TableCell>
+            <TableCell>
+              {inv.irn ? (
+                <Badge variant="outline" className="text-xs">Generated</Badge>
+              ) : (
+                <span className="text-xs text-muted-foreground">Pending</span>
+              )}
+            </TableCell>
+            <TableCell className="font-mono text-xs">
+              {inv.asn_number ?? <span className="text-muted-foreground">—</span>}
+            </TableCell>
+            <TableCell>
+              {/* No ASN means the invoice failed validation and was held from
+                  dispatch — the reason is in the Validation tab, not here. */}
+              {inv.outbound_status ? (
+                <StatusBadge status={inv.outbound_status as "PENDING" | "SENT" | "FAILED"} />
+              ) : (
+                <Badge variant="outline" className="text-xs">Held</Badge>
+              )}
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+    </>
   );
 }
 
@@ -630,6 +924,7 @@ export default function PODetailPage() {
                 )}
               </TabsTrigger>
               <TabsTrigger value="b1-push">B1 Push History</TabsTrigger>
+              <TabsTrigger value="invoices">Invoices</TabsTrigger>
               <TabsTrigger value="outbound">Outbound Messages</TabsTrigger>
               <TabsTrigger value="raw">Raw Source</TabsTrigger>
             </TabsList>
@@ -638,6 +933,7 @@ export default function PODetailPage() {
             <TabsContent value="lines"><LineItemsTab po={po} /></TabsContent>
             <TabsContent value="validation"><ValidationTab po={po} /></TabsContent>
             <TabsContent value="b1-push"><B1PushTab po={po} /></TabsContent>
+            <TabsContent value="invoices"><InvoicesTab poId={po.id} /></TabsContent>
             <TabsContent value="outbound"><OutboundTab po={po} /></TabsContent>
             <TabsContent value="raw"><RawSourceTab po={po} /></TabsContent>
           </Tabs>

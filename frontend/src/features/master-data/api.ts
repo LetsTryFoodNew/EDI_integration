@@ -81,6 +81,14 @@ export async function updateShipToMapping(
   return res.data;
 }
 
+export async function updateBillToMapping(
+  id: string,
+  payload: { b1_bill_to_code: string; is_active?: boolean },
+): Promise<unknown> {
+  const res = await apiClient.put(`/api/master-data/bill-to/${id}`, payload);
+  return res.data;
+}
+
 // ── Bulk sync (SAP pushes into these; not called by the ops UI) ───────────────
 
 export async function syncCustomers(partners: Record<string, unknown>[]): Promise<MasterDataSyncResult> {
@@ -100,5 +108,10 @@ export async function syncSkuMappings(mappings: Record<string, unknown>[]): Prom
 
 export async function syncShipTo(mappings: Record<string, unknown>[]): Promise<MasterDataSyncResult> {
   const res = await apiClient.post<MasterDataSyncResult>("/api/master-data/ship-to/sync", { mappings });
+  return res.data;
+}
+
+export async function syncBillTo(mappings: Record<string, unknown>[]): Promise<MasterDataSyncResult> {
+  const res = await apiClient.post<MasterDataSyncResult>("/api/master-data/bill-to/sync", { mappings });
   return res.data;
 }
