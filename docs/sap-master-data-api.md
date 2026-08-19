@@ -1,8 +1,8 @@
 # Master Data API — SAP B1 Integration Guide
 
 **Audience:** SAP Business One integration team
-**Purpose:** push Customer, Item Master, SKU Mapping, Ship-to and Bill-to master data from SAP B1 into the EDI middleware, and read back what landed.
-**Version:** 2.0 — 2026-07-18
+**Purpose:** push Customer, Item Master, SKU Mapping, Ship-to, Bill-to, Branch and Warehouse master data from SAP B1 into the EDI middleware, and read back what landed.
+**Version:** 2.1 — 2026-08-19
 
 Every request and response example in this document was executed against a running instance. The outputs shown are actual responses, not illustrations.
 
@@ -21,10 +21,12 @@ Every request and response example in this document was executed against a runni
 9. [SKU Mapping](#9-sku-mapping)
 10. [Ship-to](#10-ship-to)
 11. [Bill-to](#11-bill-to)
-12. [Integration sequence](#12-integration-sequence)
-13. [Smoke test](#13-smoke-test)
-14. [Open question for SAP](#14-open-question-for-sap)
-15. [Support](#15-support)
+12. [Branch Master](#12-branch-master)
+13. [Warehouse Master](#13-warehouse-master)
+14. [Integration sequence](#14-integration-sequence)
+15. [Smoke test](#15-smoke-test)
+16. [Open question for SAP](#16-open-question-for-sap)
+17. [Support](#17-support)
 
 ---
 
@@ -40,7 +42,7 @@ The middleware does **not** call SAP's Service Layer to read master data. Servic
 
 Push frequency is your choice — a nightly full push or on-change deltas both work. Endpoints are **idempotent**: re-sending the same rows updates them in place and never duplicates.
 
-### The four tables
+### The tables
 
 | Table | What it holds | Natural key |
 |---|---|---|
@@ -49,6 +51,10 @@ Push frequency is your choice — a nightly full push or on-change deltas both w
 | **SKU Mapping** | Retailer's SKU code → your item code | (`partner_code`, `buyer_sku`) |
 | **Ship-to** | Retailer delivery locations | (`partner_code`, `buyer_whs_code`) |
 | **Bill-to** | Retailer invoicing entities | (`partner_code`, `buyer_bill_to_code`) |
+| **Branch Master** | **Your** branches / business places (`OBPL`) | `bpl_id` |
+| **Warehouse Master** | **Your** warehouses (`OWHS`) | `whs_code` |
+
+The first five describe the **retailer**; the last two describe **you**. That matters for who owns what: a retailer address needs a mapping decision from our operations team, whereas a branch or warehouse is yours outright and SAP owns every field.
 
 ---
 
@@ -123,6 +129,8 @@ curl -s "$BASE/auth/me" -H "Authorization: Bearer $TOKEN"
 | SKU Mapping | `POST /api/master-data/sku-mappings/sync` | `GET /api/master-data/sku-mappings` |
 | Ship-to | `POST /api/master-data/ship-to/sync` | `GET /api/master-data/ship-to` |
 | Bill-to | `POST /api/master-data/bill-to/sync` | `GET /api/master-data/bill-to` |
+| Branch Master | `POST /api/master-data/branches/sync` | `GET /api/master-data/branches` |
+| Warehouse Master | `POST /api/master-data/warehouses/sync` | `GET /api/master-data/warehouses` |
 
 **Exist, but for our operations team — not part of your integration:**
 
@@ -133,6 +141,8 @@ curl -s "$BASE/auth/me" -H "Authorization: Bearer $TOKEN"
 | `PUT /api/master-data/materials/{id}` | Edit one item |
 | `PUT /api/master-data/ship-to/{id}` | Assign a DC to a B1 warehouse |
 | `PUT /api/master-data/bill-to/{id}` | Assign a billing entity to a B1 BP address |
+| `PUT /api/master-data/branches/{id}` | Park a branch locally / add a note |
+| `PUT /api/master-data/warehouses/{id}` | Park a warehouse locally / add a note |
 
 There is deliberately **no** `PUT` for SKU mappings — see [§9.3](#93-why-there-is-no-put).
 
@@ -627,7 +637,139 @@ Optional: `partner_code`, `limit`, `offset`.
 
 ---
 
-## 12. Integration sequence
+## 12. Branch Master
+
+**Your** branches / business places — a mirror of B1 `OBPL`. Stored in `branch_master`.
+
+> **Different from Ship-to and Bill-to.** Those describe the *retailer's* locations and carry a mapping decision on our side. Branch and Warehouse describe **our own** org structure, so SAP owns every field and there is nothing for our team to map.
+
+Under the India localization the branch is the GST registration point: B1 derives CGST/SGST vs IGST from `BPLId` plus the customer's state. Holding the branch list locally lets us build and validate a Sales Order payload without a Service Layer round trip on every push.
+
+### 12.1 Push — `POST /api/master-data/branches/sync`
+
+```json
+{ "branches": [
+  { "bpl_id": 1,
+    "bpl_name": "Let's Try Foods — Mumbai",
+    "disabled": "N",
+    "address": "Unit 5, Andheri Industrial Estate",
+    "street": "Andheri West",
+    "block": "MIDC",
+    "city": "Mumbai",
+    "zip_code": "400053",
+    "state": "Maharashtra",
+    "country": "India",
+    "gstin": "27AADCL9999Q1ZY" },
+  { "bpl_id": 2,
+    "bpl_name": "Let's Try Foods — Delhi",
+    "disabled": "Y",
+    "city": "New Delhi",
+    "zip_code": "110020",
+    "state": "Delhi",
+    "country": "India" }
+]}
+```
+→ `{"created": 2, "updated": 0, "skipped": 0, "errors": []}`
+
+| Field | B1 source | Type | Required | Notes |
+|---|---|---|---|---|
+| `bpl_id` | `OBPL.BPLId` | integer | **yes** | Natural key. Must be ≥ 1 |
+| `bpl_name` | `OBPL.BPLName` | string(255) | **yes** | |
+| `disabled` | `OBPL.Disabled` | Y/N | no | Defaults to `"N"`. See the note below |
+| `address` | `OBPL.Address` | string(500) | no | Full address as one line |
+| `street` | `OBPL.Street` | string(255) | no | |
+| `block` | `OBPL.Block` | string(100) | no | |
+| `city` | `OBPL.City` | string(100) | no | |
+| `zip_code` | `OBPL.ZipCode` | string(10) | no | **String** — leading zeros matter |
+| `state` | `OBPL.State` | string(100) | no | Drives the GST split — always send it |
+| `country` | `OBPL.Country` | string(50) | no | |
+| `gstin` | — | string(15) | no | This branch's GST registration |
+
+Natural key: **`bpl_id`**.
+
+> ### `disabled` is a Y/N field — send it however B1 gives it to you
+>
+> `OBPL.Disabled` is `NVARCHAR` in SAP. All of these are accepted and stored as a boolean: `"Y"` / `"N"`, `"y"` / `"n"`, `true` / `false`, `1` / `0`. Read back, it is always a JSON boolean.
+
+**Rules**
+
+- Creates and updates, keyed on `bpl_id`.
+- `disabled` is **always** overwritten from your push — a branch you have just re-enabled stops being treated as closed on the very next sync.
+- `is_active` and `notes` belong to our operations team and are **never** written by sync. If you send them they are ignored, so a `GET` response can be posted straight back without erasing an ops decision.
+
+### 12.2 Read — `GET /api/master-data/branches`
+
+Optional: `is_active`, `disabled`, `limit`, `offset`. Each row also carries `warehouse_count`.
+
+---
+
+## 13. Warehouse Master
+
+**Your** warehouses — a mirror of B1 `OWHS`. Stored in `warehouse_master`.
+
+Every B1 Sales Order line names a `WhsCode`, and B1 rejects a document whose warehouse and branch disagree. Holding both locally means we catch that mismatch before the push rather than as a Service Layer error afterwards.
+
+### 13.1 Push — `POST /api/master-data/warehouses/sync`
+
+> ### ⚠️ Push branches first
+>
+> `bpl_id` must already exist in Branch Master. A warehouse naming an unknown branch is **skipped and reported** rather than created with a dangling link — the same rule that makes SKU Mapping depend on Item Master.
+
+```json
+{ "warehouses": [
+  { "whs_code": "MUM-01",
+    "whs_name": "Mumbai Main Store",
+    "bpl_id": 1,
+    "inactive": "N",
+    "location": 1,
+    "street": "Andheri West",
+    "block": "MIDC",
+    "city": "Mumbai",
+    "zip_code": "400053",
+    "state": "Maharashtra",
+    "country": "India" },
+  { "whs_code": "MUM-02",
+    "whs_name": "Mumbai Cold Store",
+    "bpl_id": 1,
+    "inactive": "N",
+    "city": "Mumbai",
+    "state": "Maharashtra" }
+]}
+```
+→ `{"created": 2, "updated": 0, "skipped": 0, "errors": []}`
+
+| Field | B1 source | Type | Required | Notes |
+|---|---|---|---|---|
+| `whs_code` | `OWHS.WhsCode` | string(20) | **yes** | Natural key. Upper-cased on receipt |
+| `whs_name` | `OWHS.WhsName` | string(255) | **yes** | |
+| `bpl_id` | `OWHS.BPLid` | integer | **yes** | Must already exist in Branch Master |
+| `inactive` | `OWHS.Inactive` | Y/N | no | Defaults to `"N"` |
+| `location` | `OWHS.Location` | integer | no | Only if you use Locations |
+| `street` | `OWHS.Street` | string(255) | no | |
+| `block` | `OWHS.Block` | string(100) | no | |
+| `city` | `OWHS.City` | string(100) | no | |
+| `zip_code` | `OWHS.ZipCode` | string(10) | no | **String** |
+| `state` | `OWHS.State` | string(100) | no | |
+| `country` | `OWHS.Country` | string(50) | no | |
+
+Natural key: **`whs_code`** (globally unique, as in B1 — not scoped per branch).
+
+**Rules**
+
+- Creates and updates.
+- Unknown `bpl_id` → row skipped and reported:
+  `"MUM-09: branch BPLId 404 not in Branch Master — push POST /api/master-data/branches/sync first"`
+- One bad row does not block the rest of the batch.
+- **Re-parenting works.** Send the same `whs_code` with a different `bpl_id` and the warehouse moves branches. That is deliberately the *only* way to move it — our dashboard rejects the same edit, because a warehouse and branch that disagree make B1 reject the document.
+- `is_active` and `notes` are ours and are never written by sync.
+
+### 13.2 Read — `GET /api/master-data/warehouses`
+
+Optional: `bpl_id`, `is_active`, `inactive`, `limit`, `offset`. Each row also carries `bpl_id` and `branch_name` resolved from the parent branch.
+
+---
+
+## 14. Integration sequence
 
 Order matters, because of the references between tables:
 
@@ -637,21 +779,26 @@ Order matters, because of the references between tables:
 2.  POST /api/master-data/partners            → create each new customer (once)
 3.  POST /api/master-data/partners/sync       → update customers (ongoing)
 
-4.  POST /api/master-data/materials/sync      → items    ── must precede step 5
-5.  POST /api/master-data/sku-mappings/sync   → mappings ── needs items from step 4
-6.  POST /api/master-data/ship-to/sync        → delivery addresses
-7.  POST /api/master-data/bill-to/sync        → invoicing addresses
+4.  POST /api/master-data/materials/sync      → items      ── must precede step 5
+5.  POST /api/master-data/sku-mappings/sync   → mappings   ── needs items from step 4
+6.  POST /api/master-data/ship-to/sync        → retailer delivery addresses
+7.  POST /api/master-data/bill-to/sync        → retailer invoicing addresses
 
-7.  GET  /api/master-data/partners/{id}       → verify one customer end-to-end
+8.  POST /api/master-data/branches/sync       → your branches   ── must precede step 9
+9.  POST /api/master-data/warehouses/sync     → your warehouses ── needs branches from step 8
+
+10. GET  /api/master-data/partners/{id}       → verify one customer end-to-end
 ```
 
 **Check `skipped` and `errors` after every step before continuing.**
 
-For a recurring nightly push, steps 3–6 are all you need; step 2 only when onboarding a new retailer.
+Two ordering rules, both enforced: mappings need items (4 → 5) and warehouses need branches (8 → 9). Everything else can go in any order.
+
+For a recurring nightly push, steps 3–9 are all you need; step 2 only when onboarding a new retailer.
 
 ---
 
-## 13. Smoke test
+## 15. Smoke test
 
 ```bash
 BASE="https://<host>"
@@ -685,12 +832,6 @@ curl -s -X POST "$BASE/api/master-data/sku-mappings/sync" "${AUTH[@]}" \
        "b1_item_code":"DOCITEM1","unit_price":32.50,"margin":35.0}]}'
 # expect: {"created":1,…}
 
-# 6. Bill-to
-curl -s -X POST "$BASE/api/master-data/bill-to/sync" "${AUTH[@]}" \
-  -d '{"mappings":[{"partner_code":"DOCDEMO","buyer_bill_to_code":"DOC-HO",
-       "buyer_entity_name":"Doc Demo Commerce Private Limited","city":"Gurugram",
-       "state":"Haryana","gst_registration_no":"06AAECG1234K1Z3"}]}'
-
 # 5. Ship-to
 curl -s -X POST "$BASE/api/master-data/ship-to/sync" "${AUTH[@]}" \
   -d '{"mappings":[{"partner_code":"DOCDEMO","buyer_whs_code":"DOC-DC-1",
@@ -698,28 +839,54 @@ curl -s -X POST "$BASE/api/master-data/ship-to/sync" "${AUTH[@]}" \
        "gst_registration_no":"27AAECG1234K1Z5"}]}'
 # expect: {"created":1,…}
 
-# 6. NEGATIVE — unknown item must be rejected
+# 6. Bill-to
+curl -s -X POST "$BASE/api/master-data/bill-to/sync" "${AUTH[@]}" \
+  -d '{"mappings":[{"partner_code":"DOCDEMO","buyer_bill_to_code":"DOC-HO",
+       "buyer_entity_name":"Doc Demo Commerce Private Limited","city":"Gurugram",
+       "state":"Haryana","gst_registration_no":"06AAECG1234K1Z3"}]}'
+# expect: {"created":1,…}
+
+# 7. Branch first — note "disabled" as SAP's Y/N string
+curl -s -X POST "$BASE/api/master-data/branches/sync" "${AUTH[@]}" \
+  -d '{"branches":[{"bpl_id":9901,"bpl_name":"Doc Demo Branch","disabled":"N",
+       "city":"Mumbai","state":"Maharashtra","zip_code":"400053",
+       "gstin":"27AADCL9999Q1ZY"}]}'
+# expect: {"created":1,…}
+
+# 8. Then a warehouse under it
+curl -s -X POST "$BASE/api/master-data/warehouses/sync" "${AUTH[@]}" \
+  -d '{"warehouses":[{"whs_code":"DOC-WH-1","whs_name":"Doc Demo Mumbai Store",
+       "bpl_id":9901,"inactive":"N","city":"Mumbai","state":"Maharashtra"}]}'
+# expect: {"created":1,…}
+
+# 9. NEGATIVE — unknown item must be rejected
 curl -s -X POST "$BASE/api/master-data/sku-mappings/sync" "${AUTH[@]}" \
   -d '{"mappings":[{"partner_code":"DOCDEMO","buyer_sku":"DOC-SKU-2",
        "b1_item_code":"DOES_NOT_EXIST"}]}'
 # expect: {"created":0,"updated":0,"skipped":1,
 #          "errors":["DOCDEMO/DOC-SKU-2: item 'DOES_NOT_EXIST' not in Item_master"]}
 
-# 7. NEGATIVE — unknown customer must be rejected
+# 10. NEGATIVE — unknown customer must be rejected
 curl -s -X POST "$BASE/api/master-data/partners/sync" "${AUTH[@]}" \
   -d '{"partners":[{"code":"NEVERSEEN","name":"x"}]}'
 # expect: {"created":0,"updated":0,"skipped":1,
 #          "errors":["NEVERSEEN: no existing partner — onboard manually first"]}
 
-# 8. Verify the whole customer
+# 11. NEGATIVE — a warehouse whose branch does not exist must be rejected
+curl -s -X POST "$BASE/api/master-data/warehouses/sync" "${AUTH[@]}" \
+  -d '{"warehouses":[{"whs_code":"DOC-WH-9","whs_name":"Orphan","bpl_id":9999}]}'
+# expect: {"created":0,"updated":0,"skipped":1,
+#          "errors":["DOC-WH-9: branch BPLId 9999 not in Branch Master — …"]}
+
+# 12. Verify the whole customer
 curl -s "$BASE/api/master-data/partners" "${AUTH[@]}" | grep DOCDEMO
 ```
 
-**If steps 6 or 7 return `created: 1` instead of a rejection, stop and contact us** — the safety checks are not working.
+**If steps 9, 10 or 11 return `created: 1` instead of a rejection, stop and contact us** — the safety checks are not working.
 
 ---
 
-## 14. Open question for SAP
+## 16. Open question for SAP
 
 **Does a retailer operating in several states have one Business Partner, or one per state GSTIN?**
 
@@ -731,7 +898,7 @@ This is a live issue: retailers already in our system span four states with a di
 
 ---
 
-## 15. Support
+## 17. Support
 
 Report issues with:
 

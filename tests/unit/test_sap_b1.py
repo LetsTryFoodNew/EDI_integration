@@ -12,21 +12,19 @@ Uses the `responses` library to mock `requests` HTTP calls.
 """
 from __future__ import annotations
 
-import json
 import threading
 import time
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import pytest
 import responses as responses_lib
 
 from app.sap_b1.errors import B1ApiError, B1ClosedPeriodError, B1SessionError
-from app.sap_b1.session_pool import SessionPool, _SESSION_TTL_S
-
+from app.sap_b1.session_pool import SessionPool
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -57,11 +55,11 @@ def _make_po(**kwargs: Any) -> MagicMock:
     po.correlation_id = uuid.uuid4()
     po.buyer_po_number = kwargs.get("buyer_po_number", "PO-001")
     po.buyer_gstin = kwargs.get("buyer_gstin", "27AABCT1234M1Z5")
-    po.buyer_po_date = kwargs.get("buyer_po_date", None)
-    po.requested_delivery_date = kwargs.get("requested_delivery_date", None)
+    po.buyer_po_date = kwargs.get("buyer_po_date")
+    po.requested_delivery_date = kwargs.get("requested_delivery_date")
     po.created_at = datetime.now(UTC)
-    po.b1_sales_order_doc_entry = kwargs.get("b1_sales_order_doc_entry", None)
-    po.b1_sales_order_doc_num = kwargs.get("b1_sales_order_doc_num", None)
+    po.b1_sales_order_doc_entry = kwargs.get("b1_sales_order_doc_entry")
+    po.b1_sales_order_doc_num = kwargs.get("b1_sales_order_doc_num")
     return po
 
 
@@ -365,98 +363,13 @@ class TestServiceLayerClient:
 # po_to_sales_order mapper
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestPoToSalesOrder:
-    def _call(self, po: Any = None, lines: list[Any] | None = None,
-              partner: Any = None, seller: Any = None,
-              sku_mappings: dict[str, Any] | None = None) -> dict[str, Any]:
-        from app.mappers.po_to_sales_order import build_sales_order_payload
-        return build_sales_order_payload(
-            po=po or _make_po(),
-            lines=lines if lines is not None else [_make_line()],
-            partner=partner or _make_partner(),
-            seller=seller or _make_seller(),
-            sku_mappings=sku_mappings if sku_mappings is not None else {"SKU-001": _make_mapping()},
-        )
+# The old TestPoToSalesOrder class lived here. It pinned the previous mapper contract:
+# a `seller` argument, U_EDI_* header UDFs, and BPL_IDAssignedToInvoice defaulting to 1.
+# All three were deliberately replaced once the payload was checked against documents
+# actually posted in the live company — most importantly the default, since silently
+# picking a branch silently picks CGST+SGST vs IGST. The new contract is covered by
+# tests/unit/test_sales_order_mapping.py.
 
-    def test_header_fields_populated(self) -> None:
-        po = _make_po(buyer_po_number="PO-XYZ", buyer_gstin="27AABCT1234M1Z5")
-        partner = _make_partner(b1_card_code="C_TEST", code="TEST_CO")
-        payload = self._call(po=po, partner=partner)
-
-        assert payload["CardCode"] == "C_TEST"
-        assert payload["U_EDI_PO_NUMBER"] == "PO-XYZ"
-        assert payload["U_BUYER_GSTIN"] == "27AABCT1234M1Z5"
-        assert payload["U_EDI_SOURCE"] == "TEST_CO"
-        assert "U_EDI_DOC_UUID" in payload
-        assert "U_EDI_RECEIVED_AT" in payload
-
-    def test_line_fields_populated(self) -> None:
-        line = _make_line(buyer_sku="SKU-001", sap_material_no="ITEM001",
-                          ordered_qty=Decimal("5"), unit_price=Decimal("100.00"),
-                          b1_whs_code="WH01", hsn_code="12345678")
-        mapping = _make_mapping(buyer_sku="SKU-001", qty_per_buyer_uom=Decimal("1"))
-        payload = self._call(lines=[line], sku_mappings={"SKU-001": mapping})
-
-        doc_line = payload["DocumentLines"][0]
-        assert doc_line["ItemCode"] == "ITEM001"
-        assert doc_line["Quantity"] == 5.0
-        assert doc_line["Price"] == 100.0
-        assert doc_line["WarehouseCode"] == "WH01"
-        assert doc_line["HSNOrSACCode"] == "12345678"
-        assert doc_line["U_BUYER_SKU"] == "SKU-001"
-
-    def test_uom_conversion_applied(self) -> None:
-        line = _make_line(buyer_sku="SKU-001", ordered_qty=Decimal("10"))
-        mapping = _make_mapping(buyer_sku="SKU-001", qty_per_buyer_uom=Decimal("24"))  # 1 case = 24 pcs
-        payload = self._call(lines=[line], sku_mappings={"SKU-001": mapping})
-        assert payload["DocumentLines"][0]["Quantity"] == pytest.approx(240.0)
-
-    def test_missing_card_code_raises(self) -> None:
-        from app.mappers.po_to_sales_order import build_sales_order_payload
-        partner = _make_partner(b1_card_code=None)
-        partner.b1_card_code = None
-        with pytest.raises(ValueError, match="b1_card_code"):
-            build_sales_order_payload(
-                po=_make_po(), lines=[_make_line()],
-                partner=partner, seller=_make_seller(),
-                sku_mappings={"SKU-001": _make_mapping()},
-            )
-
-    def test_missing_item_code_raises(self) -> None:
-        from app.mappers.po_to_sales_order import build_sales_order_payload
-        line = _make_line(sap_material_no=None)
-        line.sap_material_no = None
-        with pytest.raises(ValueError, match="sap_material_no"):
-            build_sales_order_payload(
-                po=_make_po(), lines=[line],
-                partner=_make_partner(), seller=_make_seller(),
-                sku_mappings={"SKU-001": _make_mapping()},
-            )
-
-    def test_empty_lines_raises(self) -> None:
-        from app.mappers.po_to_sales_order import build_sales_order_payload
-        with pytest.raises(ValueError, match="DocumentLine"):
-            build_sales_order_payload(
-                po=_make_po(), lines=[],
-                partner=_make_partner(), seller=_make_seller(),
-                sku_mappings={},
-            )
-
-    def test_bpl_id_defaults_to_1(self) -> None:
-        seller = _make_seller(b1_bpl_id=None)
-        seller.b1_bpl_id = None
-        payload = self._call(seller=seller)
-        assert payload["BPL_IDAssignedToInvoice"] == 1
-
-    def test_bpl_id_uses_seller_value(self) -> None:
-        seller = _make_seller(b1_bpl_id=3)
-        payload = self._call(seller=seller)
-        assert payload["BPL_IDAssignedToInvoice"] == 3
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# canonical_to_b1 workflow (push_po_to_b1)
-# ─────────────────────────────────────────────────────────────────────────────
 
 class TestPushPoToB1:
     """Integration-style tests for the push_po_to_b1 workflow with mocked DB and B1 client."""
@@ -516,8 +429,8 @@ class TestPushPoToB1:
         assert result.b1_doc_entry == 42
 
     def test_wrong_status_skipped(self) -> None:
-        from app.workflows.canonical_to_b1 import push_po_to_b1
         from app.models._enums import PoStatus
+        from app.workflows.canonical_to_b1 import push_po_to_b1
         po = _make_po()
         po.po_status = PoStatus.PARSED
         po.b1_sales_order_doc_entry = None
@@ -545,8 +458,8 @@ class TestPushPoToB1:
         assert "not found" in result.error
 
     def test_unmapped_sku_marks_rejected(self) -> None:
-        from app.workflows.canonical_to_b1 import push_po_to_b1
         from app.models._enums import PoStatus
+        from app.workflows.canonical_to_b1 import push_po_to_b1
 
         po = _make_po()
         po.po_status = PoStatus.VALIDATED

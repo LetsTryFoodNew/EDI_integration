@@ -1,0 +1,164 @@
+{
+  "type": "PO_CREATION",
+  "po_number": "2264110009002",
+  "tenant": "BLINKIT",
+  "details": {
+    "po_number": "2264110009002",
+    "outlet_id": 12543,
+    "issue_date": "2026-08-19T00:00:00.000Z",
+    "expiry_date": "2026-09-02T00:00:00.000Z",
+    "delivery_date": "2026-08-26T00:00:00.000Z",
+    "vehicle_details": {
+      "license_number": "MH-04-AB-1234"
+    },
+    "buyer_details": {
+      "name": "Blink Commerce Private Limited \u2014 Bhiwandi DC",
+      "gstin": "27AAECG1234K1Z5",
+      "destination_address": {
+        "line1": "Warehouse 4, Industrial Estate",
+        "line2": "Bhiwandi",
+        "city": "Thane",
+        "state": "Maharashtra",
+        "postal_code": "421302",
+        "country": "India"
+      },
+      "registered_address": {
+        "line1": "Plot 45, MIDC",
+        "line2": "Andheri East",
+        "city": "Mumbai",
+        "state": "Maharashtra",
+        "postal_code": "400093",
+        "country": "India"
+      },
+      "contact_details": [
+        {
+          "name": "DC Manager",
+          "phone": "9876543210",
+          "email": "wh.manager@blinkit.com"
+        }
+      ]
+    },
+    "supplier_details": {
+      "id": "18309",
+      "name": "Let's Try Foods Private Limited",
+      "gstin": "27AADCL9999Q1ZY",
+      "pan": "AADCL9999Q",
+      "shipping_address": {
+        "line1": "Unit 5, Andheri Industrial Estate",
+        "line2": "Andheri West",
+        "city": "Mumbai",
+        "state": "Maharashtra",
+        "postal_code": "400053",
+        "country": "India"
+      },
+      "registered_address": {
+        "line1": "Unit 5, Andheri Industrial Estate",
+        "line2": "Andheri West",
+        "city": "Mumbai",
+        "state": "Maharashtra",
+        "postal_code": "400053",
+        "country": "India"
+      },
+      "contact_details": [
+        {
+          "name": "Sales Desk",
+          "phone": "9123456789",
+          "email": "tech@letstryfoods.com"
+        }
+      ]
+    },
+    "item_data": [
+      {
+        "item_id": 10116317,
+        "sku_code": "10116317",
+        "line_number": 0,
+        "units_ordered": 360,
+        "landing_price": 71.6,
+        "basic_price": 67.05,
+        "tax_details": {
+          "cgst_percentage": 2.5,
+          "sgst_percentage": 2.5,
+          "igst_percentage": null,
+          "cess_percentage": null,
+          "additional_cess_value": null
+        },
+        "crates_config": {
+          "crates_ordered": 10,
+          "crate_size": 36
+        },
+        "name": "Let's Try Pudina Makhana 57g",
+        "mrp": 160,
+        "upc": "8901774002349",
+        "uom": {
+          "unit": "g",
+          "value": 57
+        }
+      },
+      {
+        "item_id": 10116320,
+        "sku_code": "10116320",
+        "line_number": 1,
+        "units_ordered": 240,
+        "landing_price": 67.2,
+        "basic_price": 62.86,
+        "tax_details": {
+          "cgst_percentage": 2.5,
+          "sgst_percentage": 2.5,
+          "igst_percentage": null,
+          "cess_percentage": null,
+          "additional_cess_value": null
+        },
+        "crates_config": {
+          "crates_ordered": 8,
+          "crate_size": 30
+        },
+        "name": "Let's Try Khatta Metha 173g",
+        "mrp": 120,
+        "upc": "8901774002356",
+        "uom": {
+          "unit": "g",
+          "value": 173
+        }
+      },
+      {
+        "item_id": 10117527,
+        "sku_code": "10117527",
+        "line_number": 2,
+        "units_ordered": 180,
+        "landing_price": 26.19,
+        "basic_price": 23.8,
+        "tax_details": {
+          "cgst_percentage": 2.5,
+          "sgst_percentage": 2.5,
+          "igst_percentage": null,
+          "cess_percentage": null,
+          "additional_cess_value": null
+        },
+        "crates_config": {
+          "crates_ordered": 5,
+          "crate_size": 36
+        },
+        "name": "Let's Try Potato Wafer 52g",
+        "mrp": 60,
+        "upc": "8901774002363",
+        "uom": {
+          "unit": "g",
+          "value": 52
+        }
+      }
+    ],
+    "total_sku": 3,
+    "total_qty": 780,
+    "total_amount": 45683.82,
+    "custom_attributes": [
+      {
+        "name": "purchase_type",
+        "value": "REGULAR"
+      },
+      {
+        "name": "buyer_reference",
+        "value": "REQ-2026-08-19-9002"
+      }
+    ]
+  }
+}

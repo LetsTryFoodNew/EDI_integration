@@ -41,7 +41,8 @@ import StatusBadge from "@/components/shared/StatusBadge";
 import DateDisplay from "@/components/shared/DateDisplay";
 import MoneyDisplay from "@/components/shared/MoneyDisplay";
 import { Skeleton } from "@/components/ui/skeleton";
-import { fetchPODetail, fetchPOInvoices, sendInvoiceAsn, downloadInvoicePdf, retrySAPPush, cancelPO, updatePO, pushToSAP, revalidatePO } from "./api";
+import { fetchPODetail, fetchPOInvoices, sendInvoiceAsn, downloadInvoicePdf, retrySAPPush, cancelPO, updatePO, revalidatePO } from "./api";
+import SapPushDialog from "./components/SapPushDialog";
 import type { POUpdatePayload } from "./api";
 import type { Invoice, PODetail } from "@/types";
 
@@ -718,14 +719,7 @@ export default function PODetailPage() {
     onError: () => toast({ title: "Retry failed", variant: "destructive" }),
   });
 
-  const pushMutation = useMutation({
-    mutationFn: () => pushToSAP(poId!),
-    onSuccess: () => {
-      toast({ title: "Pushed to SAP", description: "SAP push job queued successfully." });
-      queryClient.invalidateQueries({ queryKey: ["pos", poId] });
-    },
-    onError: () => toast({ title: "Push to SAP failed", variant: "destructive" }),
-  });
+  const [pushOpen, setPushOpen] = useState(false);
 
   const revalidateMutation = useMutation({
     mutationFn: () => revalidatePO(poId!),
@@ -787,6 +781,27 @@ export default function PODetailPage() {
         />
       )}
 
+      {/* A superseded PO is history: every action below is correctly disabled on it.
+          Without this pointer the page reads as broken rather than archived — which is
+          exactly how it was reported. */}
+      {po.po_status === "SUPERSEDED" && po.current_version_id && (
+        <Alert>
+          <AlertDescription className="flex items-center justify-between gap-4 flex-wrap">
+            <span className="text-sm">
+              This is <strong>version {po.version}</strong>, replaced by a newer one.
+              Actions and SKU mapping apply to the current version.
+            </span>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => navigate(`/pos/${po.current_version_id}`)}
+            >
+              View current version (v{po.current_version})
+            </Button>
+          </AlertDescription>
+        </Alert>
+      )}
+
       {/* Header */}
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div className="flex items-start gap-3">
@@ -831,24 +846,21 @@ export default function PODetailPage() {
             </Button>
           )}
 
-          {/* Push to SAP — blocked while validation errors are unresolved */}
+          {/* Push to SAP — opens the branch/warehouse dialog. Blocked while
+              validation errors are unresolved. */}
           {canPushToSap && (
             <Button
               size="sm"
               variant="default"
-              onClick={() => pushMutation.mutate()}
-              disabled={pushMutation.isPending || pushBlocked}
+              onClick={() => setPushOpen(true)}
+              disabled={pushBlocked}
               title={
                 pushBlocked
                   ? `Resolve ${openErrorCount} validation error(s) before pushing to SAP`
-                  : undefined
+                  : "Choose a branch and warehouse, then push"
               }
             >
-              {pushMutation.isPending ? (
-                <Loader2 className="h-4 w-4 animate-spin mr-1" />
-              ) : (
-                <Send className="h-4 w-4 mr-1" />
-              )}
+              <Send className="h-4 w-4 mr-1" />
               Push to SAP
               {pushBlocked && (
                 <Badge variant="destructive" className="ml-1.5 text-xs">{openErrorCount}</Badge>
@@ -939,6 +951,8 @@ export default function PODetailPage() {
           </Tabs>
         </CardContent>
       </Card>
+
+      <SapPushDialog poId={po.id} open={pushOpen} onOpenChange={setPushOpen} />
     </div>
   );
 }

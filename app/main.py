@@ -12,6 +12,7 @@ from app.api.middleware import AuditMiddleware
 from app.api.routes.api_inbox import router as api_inbox_router
 from app.api.routes.auth import router as auth_router
 from app.api.routes.b1_logs import router as b1_logs_router
+from app.api.routes.branch_warehouse import router as branch_warehouse_router
 from app.api.routes.dashboard import router as dashboard_router
 from app.api.routes.exceptions import router as exceptions_router
 from app.api.routes.health import router as health_router
@@ -19,6 +20,7 @@ from app.api.routes.inbox import router as inbox_router
 from app.api.routes.invoices import router as invoices_router
 from app.api.routes.manual_inbox import router as manual_inbox_router
 from app.api.routes.master_data import router as master_data_router
+from app.api.routes.po_sap_push import router as po_sap_push_router
 from app.api.routes.pos import router as pos_router
 from app.api.routes.webhooks import router as webhooks_router
 from app.config import get_settings
@@ -64,8 +66,13 @@ app.include_router(health_router)
 app.include_router(webhooks_router)
 app.include_router(auth_router)
 app.include_router(pos_router)
+# Same /api/pos prefix as pos_router — split out to keep that module readable.
+app.include_router(po_sap_push_router)
 app.include_router(dashboard_router)
 app.include_router(master_data_router)
+# Same /api/master-data prefix and tag as master_data_router — split out only to
+# keep that module a readable size (see its docstring).
+app.include_router(branch_warehouse_router)
 app.include_router(b1_logs_router)
 app.include_router(exceptions_router)
 app.include_router(inbox_router)

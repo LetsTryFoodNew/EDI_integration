@@ -1,5 +1,329 @@
 # Changelog
 
+## Fix — B1 log serialization 500s once a PO was actually pushed (2026-08-19)
+
+`GET /api/pos/{id}` returned 500 for any PO with a SAP push behind it:
+`AttributeError: 'B1ApiLog' object has no attribute 'http_status'`.
+
+Four attribute names in the API layer never matched the model:
+
+| API field | Actual column |
+|---|---|
+| `http_status` | `response_status` |
+| `request_payload` | `request_body` |
+| `response_payload` | `response_body` |
+| `success` | *(no column at all)* |
+
+**Why it stayed hidden.** Nothing had ever been pushed to B1, so `b1_api_log` was empty.
+An empty table serializes cleanly — the list endpoint returned `items: []` and looked
+healthy, and PO detail never entered the loop that reads these fields. The first real
+Sales Order turned four endpoints into 500s at once: PO detail, the B1 Logs list, its
+detail view, and the `?success=` filter (which was a broken SQL reference, not just a
+serialization one).
+
+`success` is now a `hybrid_property` derived from the HTTP status rather than a stored
+column — a column would be a second source of truth that could drift from
+`response_status`, and a request that never reached B1 (logged with status 0) is
+correctly not a success. Being hybrid keeps `?success=false` filtering in SQL.
+
+The two routes now map field by field instead of `model_validate(..., from_attributes)`,
+which silently required all four names to line up.
+
+- `tests/unit/test_b1_log_serialization.py` — 17 tests against a **populated** log row,
+  which is the case the old tests never covered. Also pins the reverse mistake: if a real
+  `http_status` column is ever added, the explicit mappings need revisiting.
+- Suite 296 → **313 passing**.
+
+Also fixed while testing the Blinkit pipeline: `ShipToMappingRule` writes
+`line.b1_whs_code` onto every line, and the mapper preferred it over the warehouse chosen
+in the push dialog — so selecting a warehouse silently did nothing. Worse, the seeded
+BLINKIT ship-to rows point at `WH01`/`WH02`/`WH06`, which do not exist in the real B1, so
+that path would have been rejected on push. The operator's selection now wins and a
+disagreement raises a visible warning.
+
+## Phase 6 — Blinkit PO → SAP B1 Sales Order, with branch/warehouse selection (2026-08-19)
+
+**A real Sales Order now exists in `TESTECPL260422`: DocNum 3000044 / DocEntry 1767**,
+created from Blinkit PO `2264110001442` — `DocTotal 14430.00`, `VatSum 687.12`, both
+lines `CSGST@5` on `FG_MH`.
+
+The payload was rebuilt against **documents actually posted in the live company**
+(`GET /Orders?$filter=CardCode eq 'D00086'`, DocEntry 1764) rather than the generic
+Service Layer reference. B1 installations differ enormously in which UDFs exist and what
+tax codes are called, and an undefined property fails the whole POST — so guessing the
+shape from documentation would have failed on the first push with an opaque error.
+
+### The branch is a tax decision, so the operator makes it
+
+Under the India localization `BPL_IDAssignedToInvoice` is the **from-state** for place of
+supply. Branch state == ship-to state gives `CSGST@{rate}`; otherwise `IGST@{rate}`. That
+naming and rule were confirmed against ~1,600 posted lines: branch 1 (Haryana) ships
+`CSGST@5` to Haryana and `IGST@5` everywhere else; branch 5 (Maharashtra) ships
+`CSGST@5` to Maharashtra.
+
+Booking a Maharashtra order against the Haryana branch produces a document B1 accepts
+without complaint, with the wrong tax code, wrong ledger and wrong GST return — visible
+at filing time, not at push time. So:
+
+- **Nothing is defaulted.** The previous mapper defaulted `BPL_IDAssignedToInvoice` to 1;
+  that is now an error. A default branch is a silent tax decision.
+- The push dialog labels every branch with its tax effect *before* one is chosen.
+- A PO whose ship-to state cannot be resolved is refused, not taxed on a guess.
+- The warehouse is checked against the branch locally — B1 rejects mismatches, and a
+  sentence beats relaying a Service Layer error.
+
+### Three real bugs found on the way
+
+- **Every B1 call would have 404'd.** `.env` set `B1_SERVICE_LAYER_URL=.../b1s/v1` and the
+  client appended `/b1s/v1` again, producing `/b1s/v1/b1s/v1/Orders`. Never hit because
+  B1 was never configured. `_split_base_url` now detects the suffix, so both spellings
+  work and the version in the URL is honoured (this server is **v2**).
+- **`query()` returned only the first OData page.** Service Layer paginates at 20 rows.
+  The first warehouse sync looked like a clean success and silently produced 20 of 41
+  warehouses — branches 4 and 5 appeared to have none, while posted orders used `FG_KA`
+  and `FG_MH`. Now follows `@odata.nextLink`, with a page cap and a warning if hit.
+- **A skipped push reported nothing.** `push_po_to_b1` returned `skip_reason` but the API
+  surfaced `error`, so a status mismatch produced "SAP rejected the order" with
+  `error=None` in the log — for a call that never reached SAP.
+
+### Also
+
+- `app/utils/gst.py` — place-of-supply resolution and B1 tax-code naming. State codes are
+  read from B1's own `/States`, which uses `BH`/`OD`/`UA` where ISO-style lists say
+  `BR`/`OR`/`UK`; following B1 is what matters since we compare against B1's own data.
+  GSTIN prefix beats free-text state, and an unresolvable state returns `None` rather
+  than a guess.
+- `scripts/sync_b1_org_from_sap.py` — bootstraps Branch/Warehouse Master from the live
+  company through our own sync endpoints (so the same validation, ordering rule and audit
+  log apply). Reports local rows B1 does not have; `--prune` deactivates them, never
+  deletes. Loaded **5 branches and 41 warehouses**.
+- **`scripts/load_demo_branches_warehouses.py` deleted.** Its demo BPLIds 1–5 collide
+  exactly with the real branches, so running it would have renamed Haryana to
+  "Let's Try Foods — Mumbai (HO)". The eight invented warehouses were removed too.
+- Migration `0013` adds `b1_bpl_id`, `b1_whs_code`, `b1_ship_to_code`, `b1_pay_to_code`
+  to `edi_purchase_orders` so a retry repeats the operator's choice. Verified reversible.
+- `U_MWOrderID` from the draft spec is **not defined on `ORDR`** here and is not sent.
+  Confirmed against `UserFieldsMD` (236 UDFs) and a posted document. `U_OrdType`,
+  `U_POEXP_DT` and `U_DC_TAT` do exist and are used.
+
+### Dashboard
+
+**Push to SAP** on the PO detail page now opens a dialog instead of firing a queued job:
+branch (labelled CGST+SGST or IGST), warehouse (filtered to that branch), and ship-to /
+bill-to addresses read live from B1 — one customer here has 142, so the ones matching the
+PO's PIN or state are starred and sorted first. **Preview payload** renders the exact
+JSON before anything is sent. The push runs synchronously because the operator is
+watching and a B1 rejection is more useful shown than logged.
+
+Fixed while testing: Base UI's `Select.Value` renders the raw value unless given a
+formatter, so the triggers read `5` and literally `__none__`.
+
+### Verification
+
+- 8 endpoints exercised live; all six dispatch guards return readable 422s.
+- Idempotency confirmed: a second push returns 400 naming the existing DocNum.
+- Backend 270 → **295 passing** (33 new in `tests/unit/test_sales_order_mapping.py`).
+  The old `TestPoToSalesOrder` class was removed — it pinned the previous contract,
+  including `BPL_IDAssignedToInvoice` defaulting to 1, which is exactly what this change
+  makes impossible.
+- Frontend 20 → **28 passing**. `ruff check app/`, `tsc -b`, `oxlint` all clean.
+- Contract documented in `docs/sap-sales-order-push.md`; four Postman requests added
+  (including the negative warehouse/branch mismatch).
+
+## Phase 8 — Branch Master and Warehouse Master REST API (2026-08-19)
+
+Two new SAP-pushed master tables mirroring B1 `OBPL` (branch / business place) and
+`OWHS` (warehouse), with the same push/read/edit shape as the rest of master data:
+
+```
+POST /api/master-data/branches/sync      GET /api/master-data/branches      PUT .../{id}
+POST /api/master-data/warehouses/sync    GET /api/master-data/warehouses    PUT .../{id}
+```
+
+**These are ours, not the retailer's.** Ship-to and bill-to describe a retailer's
+locations and carry an ops mapping decision (`b1_whs_code`, `b1_bill_to_code`). Branch
+and warehouse describe our own SAP org structure, so there is nothing to map: SAP owns
+every business field, and `is_active` / `notes` are the only locally-writable columns.
+Sync never touches those two, so a push cannot undo an ops decision — and a `GET`
+response can be posted straight back without erasing one.
+
+Why hold them locally at all: a B1 Sales Order line names both a `WhsCode` and a
+`BPLId`, and under the India localization the branch is the GST registration point B1
+uses to derive CGST/SGST vs IGST. Reading either from the Service Layer per push would
+spend licensed, capped sessions (CLAUDE.md §7) on data that changes a few times a year.
+
+Three details that carry real risk, each pinned by a test:
+
+- **`OWHS.BPLid` is a real FK, not a loose integer.** B1 rejects a marketing document
+  whose warehouse and branch disagree, so `warehouse_master.branch_id` references
+  `branch_master.id` and sync resolves it from the incoming `bpl_id`. A warehouse naming
+  an unknown branch is skipped and reported rather than created with a dangling link —
+  the same ordering rule that already makes SKU mapping depend on Item Master. **Push
+  branches before warehouses.**
+- **Re-parenting is a SAP change only.** Sending the same `whs_code` with a different
+  `bpl_id` moves the warehouse; the same edit via `PUT` returns `409` naming the field.
+  Allowing it locally would let the dashboard create exactly the warehouse/branch
+  mismatch B1 refuses.
+- **`Disabled` and `Inactive` arrive as SAP `NVARCHAR` Y/N.** Stored as booleans;
+  `"Y"`/`"N"`, `true`/`false` and `1`/`0` are all accepted (Pydantic coerces them), the
+  same treatment `material_master.frozen_for` already gets. A silent mis-read would
+  invert a branch's status.
+
+Both flags are always overwritten by sync, deliberately: a branch SAP has just
+re-enabled must stop being treated as closed on the very next push.
+
+Routes live in `app/api/routes/branch_warehouse.py` rather than `master_data.py`, which
+was already 1,288 lines. Same `/api/master-data` prefix and OpenAPI tag, so they appear
+alongside the rest in `/docs`.
+
+- Migration `0012_branch_warehouse_master` — verified reversible (`upgrade` →
+  `downgrade -1` → `upgrade` clean).
+- 32 unit tests in `tests/unit/test_branch_warehouse.py`; suite 238 → 270 passing.
+  `ruff check app/` clean, `mypy app/api/routes/branch_warehouse.py` clean.
+- `docs/sap-master-data-api.md` → v2.1: new sections 12 and 13, endpoint summary,
+  integration sequence and smoke test updated (tail sections renumbered 12–15 → 14–17).
+- Postman collection: two new folders (10, 11) with working payloads and both negative
+  cases; every request executed against the running API before committing. Later folders
+  renumbered, so the webhook folder is now **17**, not 15.
+- `docs/backlog.md` created — records validating `ship_to_mapping.b1_whs_code` against
+  the new warehouse master, which is now possible for the first time.
+
+### Dashboard screen
+
+**Master Data → Warehouses** (`/master-data/warehouses`), reached from a nested sidebar
+row under Master Data. Two tabs — Warehouses (default, filterable by branch) and
+Branches — in `frontend/src/features/warehouses/`.
+
+The screen's job is keeping **two different facts visibly apart**: SAP's own flag
+(`OBPL.Disabled` / `OWHS.Inactive`, shown as *Live* / *Disabled* / *Inactive*) and ours
+(`is_active`, shown as *In use* / *Parked*). A warehouse can be live in SAP and parked
+here — dock under repair — and collapsing them into one column would hide which system
+needs the fix. Park / Resume is the only write the dashboard makes, and it sends
+`is_active` alone, since anything SAP owns comes back 409.
+
+`Sidebar.tsx` grew nested rows. `NavLink` matching had to stay prefix-based for the
+existing entries — `end` on every row would have stopped `/pos/:id` highlighting
+"Purchase Orders" — so exact matching applies only to `/` and to rows that have
+children.
+
+- `scripts/load_demo_branches_warehouses.py` — 5 branches (one SAP-disabled) and
+  8 warehouses (one SAP-inactive, one live-but-parked) driven through the live sync API,
+  so it exercises auth, both handlers, the branch-before-warehouse ordering rule and the
+  ops PUT. Idempotent; re-running reports `updated`, never `created`.
+- 7 Vitest tests; frontend suite 13 → 20 passing. `tsc -b`, `oxlint` and `vite build`
+  all clean.
+- Response shape verified field-for-field against the TypeScript interfaces — 17 keys
+  each, no drift in either direction.
+
+## Phase 4 — Blinkit parser aligned to the POVMS contract (2026-08-19)
+
+Rebuilt the Blinkit parser against Blinkit's own **"POVMS - Purchase Order Creation API
+Contracts" (2026-02-10)**, archived at
+`_archive/backend_old/assets/POVMS-Purchase Order Creation API Contracts-*.txt` — a PDF
+despite the `.txt` extension. The parser docstring now cites contract section numbers
+(3.6.x) so a future revision can be diffed against the code directly.
+
+Five contract facts changed real behaviour:
+
+- **`sku_code` (3.6.2) is optional and the contract's own example ships it EMPTY.** It is
+  the field we map on, so an empty value produced a blank `buyer_sku` and an unmappable
+  line. Now falls back to `item_id` (3.6.1, mandatory) with a warning, because the SAP
+  mapping must then be keyed on the item_id.
+- **`line_number` (3.6.3) is ZERO-BASED.** Our UI, every other partner and the
+  `(po_id, line_number)` unique constraint assume 1-based. A PO numbering from 0 is now
+  shifted by +1 across the whole PO — relative order preserved, only the offset moves.
+- **`uom` (3.6.11) was hardcoded to `"EA"`**, silently mislabelling a 12 ml item as
+  12 each — which then converts wrongly against `sku_mapping.qty_per_buyer_uom`.
+- **CESS (3.6.7.4 / 3.6.7.5) was dropped entirely.** The percentage and the flat
+  `additional_cess_value` are different units; both are now captured and combined onto
+  the line and the header.
+- **`landing_price` (3.6.5) is NOT the billing price.** It includes logistics and taxes;
+  `basic_price` (3.6.6) is the pre-tax cost. Pricing on the wrong one would inflate
+  taxable value and double-count tax. Documented so it is not "corrected" later.
+
+Contract enums are now real `StrEnum`s rather than string literals: `BlinkitTenant`
+(BLINKIT | HYPERPURE), `BlinkitEventType`, `BlinkitAckStatus`
+(processing | accepted | partially_accepted | rejected), `BlinkitErrorCode` (E101-E105)
+and `BlinkitWarningCode` (W101). The contract's enum table is lower-case while its own
+example JSON shows `PARTIALLY_ACCEPTED`; we follow the table as the normative part.
+
+Header checks added, all non-fatal — a readable PO is worth storing even when a count
+disagrees, but the drift belongs on the PO rather than in a log:
+
+- **`tenant` (section 4) may be HYPERPURE**, which is a different legal buyer from
+  Blinkit with its own GSTIN and CardCode. Booking it against the Blinkit CardCode
+  invoices the wrong customer, so a non-BLINKIT tenant now warns.
+- `details.po_number` vs top-level mismatch (3.1), `total_sku` (3.7) and `total_qty`
+  (3.8) vs what was parsed.
+- **`total_amount` (3.9) divergence beyond ₹1.00.** The header value still wins — it is
+  what Blinkit pays against — but it is also the figure most worth distrusting: the
+  contract's own example ships `total_amount: 42` for a PO whose lines come to 7,814.52.
+
+`hsn_code` is **not in the contract at any level**. It is still read when present, since
+production payloads have carried it, but its absence is normal and not an error.
+
+Not mapped, and deliberately so: `vehicle_details`, `buyer_details.registered_address`,
+`contact_details[]`, the whole `supplier_details` block, `crates_config` and
+`custom_attributes` have no canonical destination. Expanding EDI850 for partner-specific
+extras would push Blinkit's shape into every other partner's documents.
+
+**Zepto is untouched** — verified `git diff` against HEAD is empty for both
+`zepto_parser.py` and `zepto_api.py`. Existing Blinkit behaviour is unchanged too: the
+original and updated parsers produce byte-identical output on both production fixtures.
+
+28 new tests pin the contract behaviours; 238 unit tests pass, `ruff check app/` clean.
+
+## Phase 3 — Swiggy changed its attachment format; parser now handles both (2026-08-19)
+
+**183 Swiggy POs from 2026-08-06 onward had been failing silently.** Every one reported
+"No .xls attachment found".
+
+Swiggy switched attachment generations without notice:
+
+    LEGACY   SOTY-{SELLER}-{PO}.xls
+             SpreadsheetML — XML carrying an .xls extension
+    CURRENT  {CODE}_CREATE_OTB_PURCHASE_ORDER_{uuid}.xlsx
+             genuine OOXML (a ZIP)
+
+Two separate faults, either of which alone would have broken it:
+
+1. **Detection.** The selector used `endswith(".xls")`, which does not match `".xlsx"` —
+   `.xls` is a prefix of `.xlsx`, so the check reads as though it should work and does
+   not. Every new-format email looked like it had no spreadsheet at all.
+2. **Reading.** Even once found, `.xlsx` is a ZIP and the SpreadsheetML XML path cannot
+   open it. It needs openpyxl and a genuinely different extraction: a 2D grid with a
+   two-row merged header, not a flat positional cell list.
+
+- Dispatch is on the file's **magic bytes** (`PK\x03\x04`), not its extension. Extensions
+  have already proved unreliable here; content cannot lie.
+- The OOXML path addresses columns by **header name**, not fixed offsets — the file
+  already shifts columns between its item rows and its totals row, and Swiggy has now
+  changed this layout once without warning. `_ooxml_column_map()` reconstructs the
+  two-row header by carrying merged group labels forward, so `CGST`+`Amt` resolves to a
+  real column.
+- Grand total is read from the labelled `Grand Total (INR)` row rather than the
+  unlabelled totals row above it, whose columns are offset by a merged cell — reading
+  that one positionally returns the tax figure instead of the total.
+- `openpyxl` is loaded **without** `read_only`: Swiggy's generator writes an inaccurate
+  `<dimension>` record, and read_only trusts it, reporting a 1×1 sheet for an 87-row file.
+- The "no attachment" error now lists what the email actually carried, which is what
+  makes the two genuine remaining failures self-explanatory.
+
+**Legacy path verified byte-for-byte unchanged** — the original parser and the updated
+one were run against the same legacy `.xls` and produced identical output down to
+per-line values.
+
+Validated against 12 real failing files: all parsed, all totals reconciling with the
+file's own grand total (largest delta ₹0.08, Swiggy's own rounding). Backfilled the
+stuck messages: **FAILED 183 → 2**. The two survivors are not POs — they are GRN
+documents (`GRN_159731.pdf`, `GRN_print_V2-*.pdf`) that landed in the PO label and have
+no spreadsheet to parse, so failing is correct.
+
+17 new tests cover both generations, attachment preference when both are present,
+format detection, the totals-row trap, and per-row error isolation. The `.xlsx` fixture
+is synthesised in-test rather than committed — the real files carry live customer
+addresses and GSTINs.
+
 ## Phase 8 — Bill-to addresses (2026-08-18)
 
 A parallel master-data resource to Ship-to, for the retailer's **invoicing** entity.

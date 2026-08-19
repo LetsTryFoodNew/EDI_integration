@@ -1,5 +1,13 @@
 import apiClient from "@/lib/api-client";
-import type { Invoice, PaginatedResponse, POListItem, PODetail } from "@/types";
+import type {
+  DispatchOptions,
+  Invoice,
+  PaginatedResponse,
+  POListItem,
+  PODetail,
+  SapPreview,
+  SapPushSelection,
+} from "@/types";
 
 export interface POFilters {
   partner_code?: string;
@@ -94,4 +102,28 @@ export async function downloadInvoicePdf(invoiceId: string, invoiceNumber: strin
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
+}
+
+// ── SAP push with an explicit branch / warehouse selection ───────────────────
+
+export async function fetchDispatchOptions(poId: string): Promise<DispatchOptions> {
+  const res = await apiClient.get<DispatchOptions>(`/api/pos/${poId}/dispatch-options`);
+  return res.data;
+}
+
+/** Builds the exact JSON that would be posted to B1. Sends nothing to SAP. */
+export async function previewSapPayload(
+  poId: string,
+  selection: SapPushSelection,
+): Promise<SapPreview> {
+  const res = await apiClient.post<SapPreview>(`/api/pos/${poId}/preview-sap`, selection);
+  return res.data;
+}
+
+export async function pushToSAPWith(
+  poId: string,
+  selection: SapPushSelection,
+): Promise<{ success: boolean; message: string }> {
+  const res = await apiClient.post<{ success: boolean; message: string }>(`/api/pos/${poId}/push-to-sap-with`, selection);
+  return res.data;
 }

@@ -104,6 +104,13 @@ class EdiPurchaseOrder(Base):
     buyer_name: Mapped[str | None] = mapped_column(String(255))
 
     # ── SAP B1 linkage ────────────────────────────────────────────────────────
+    # Routing chosen at push time — see alembic 0013. The branch is the "from" state
+    # for place-of-supply, so it decides CGST+SGST vs IGST; the warehouse must belong
+    # to it or B1 rejects the document.
+    b1_bpl_id: Mapped[int | None] = mapped_column(Integer)
+    b1_whs_code: Mapped[str | None] = mapped_column(String(20))
+    b1_ship_to_code: Mapped[str | None] = mapped_column(String(100))
+    b1_pay_to_code: Mapped[str | None] = mapped_column(String(100))
     b1_sales_order_doc_entry: Mapped[int | None] = mapped_column(Integer)
     b1_sales_order_doc_num: Mapped[int | None] = mapped_column(Integer)
     b1_pushed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -266,3 +266,84 @@ class BillToMapping(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     trading_partner: Mapped[TradingPartner] = relationship("TradingPartner", back_populates="bill_to_mappings")
+
+
+class BranchMaster(Base):
+    """
+    Branch / business place — a 1:1 mirror of SAP B1 OBPL.
+
+    In the India localization a branch is the GST registration point: `BPLId` is what
+    B1 uses to derive CGST/SGST vs IGST on a marketing document, so a Sales Order we
+    push must name the branch the goods actually ship from. Column names follow OBPL
+    (snake_cased) so the SAP team can map fields without a translation table.
+
+    `disabled` is SAP's own flag and is always overwritten on sync. `is_active` is our
+    operational flag: ops can park a branch here without waiting for a SAP change.
+    """
+
+    __tablename__ = "branch_master"
+    __table_args__ = (
+        Index("ix_branch_master_bpl_id", "bpl_id", unique=True),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    bpl_id: Mapped[int] = mapped_column(Integer, nullable=False)              # OBPL.BPLId — SAP PK
+    bpl_name: Mapped[str] = mapped_column(String(255), nullable=False)        # OBPL.BPLName
+    disabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)  # OBPL.Disabled Y/N
+    address: Mapped[str | None] = mapped_column(String(500))                 # OBPL.Address
+    street: Mapped[str | None] = mapped_column(String(255))                  # OBPL.Street
+    block: Mapped[str | None] = mapped_column(String(100))                   # OBPL.Block
+    city: Mapped[str | None] = mapped_column(String(100))                    # OBPL.City
+    zip_code: Mapped[str | None] = mapped_column(String(10))                 # OBPL.ZipCode
+    state: Mapped[str | None] = mapped_column(String(100))                   # OBPL.State
+    country: Mapped[str | None] = mapped_column(String(50))                  # OBPL.Country
+    gstin: Mapped[str | None] = mapped_column(String(15))                    # branch GST registration
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)  # our operational flag
+    notes: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    warehouses: Mapped[list[WarehouseMaster]] = relationship("WarehouseMaster", back_populates="branch")
+
+
+class WarehouseMaster(Base):
+    """
+    Warehouse — a 1:1 mirror of SAP B1 OWHS.
+
+    Every warehouse belongs to a branch (`OWHS.BPLid`, mandatory in SAP), so the link
+    is a real FK here rather than a loose integer: a Sales Order line carries both a
+    WhsCode and a BPLId, and they must agree or B1 rejects the document. Sync resolves
+    the incoming `bpl_id` to `branch_id` and rejects the row if no such branch exists —
+    the same ordering rule that makes SKU mapping depend on Item Master.
+
+    `inactive` is SAP's own flag (always overwritten on sync); `is_active` is ours.
+    """
+
+    __tablename__ = "warehouse_master"
+    __table_args__ = (
+        Index("ix_warehouse_master_whs_code", "whs_code", unique=True),
+        Index("ix_warehouse_master_branch", "branch_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    whs_code: Mapped[str] = mapped_column(String(20), nullable=False)        # OWHS.WhsCode — SAP PK
+    whs_name: Mapped[str] = mapped_column(String(255), nullable=False)       # OWHS.WhsName
+    branch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("branch_master.id"), nullable=False
+    )                                                                        # resolved from OWHS.BPLid
+    inactive: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)  # OWHS.Inactive Y/N
+    location: Mapped[int | None] = mapped_column(Integer)                    # OWHS.Location
+    street: Mapped[str | None] = mapped_column(String(255))                  # OWHS.Street
+    block: Mapped[str | None] = mapped_column(String(100))                   # OWHS.Block
+    city: Mapped[str | None] = mapped_column(String(100))                    # OWHS.City
+    zip_code: Mapped[str | None] = mapped_column(String(10))                 # OWHS.ZipCode
+    state: Mapped[str | None] = mapped_column(String(100))                   # OWHS.State
+    country: Mapped[str | None] = mapped_column(String(50))                  # OWHS.Country
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)  # our operational flag
+    notes: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    branch: Mapped[BranchMaster] = relationship("BranchMaster", back_populates="warehouses")

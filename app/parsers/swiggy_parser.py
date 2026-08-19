@@ -1,9 +1,25 @@
 """
-Swiggy/Scootsy PO parser — parses SpreadsheetML .xls attachments from procurement emails.
+Swiggy/Scootsy PO parser — handles BOTH attachment generations.
 
 Source: Gmail label SWIGGY_PO; sender domains: scootsy.com, swiggy.in
-File format: Microsoft SpreadsheetML (XML with .xls extension, NOT binary xls)
-Attachment naming pattern: SOTY-{SELLER_CODE}-{PO_NUMBER}.xls
+
+Two formats are in circulation and both must keep working. Swiggy switched over around
+2026-08-06 without notice; every PO from that date failed with "No .xls attachment
+found" because the new file is .xlsx and the old detector matched only .xls.
+
+  LEGACY  SOTY-{SELLER_CODE}-{PO_NUMBER}.xls
+          Microsoft SpreadsheetML — XML with an .xls extension, NOT binary xls.
+          Read as a flat ordered list of non-empty cells (positional).
+
+  CURRENT {CODE}_CREATE_OTB_PURCHASE_ORDER_{uuid}.xlsx
+          Genuine OOXML (a ZIP), unreadable by the XML path. Read with openpyxl as a
+          real 2D grid, and addressed by *column header name* rather than position —
+          see _ooxml_column_map(). Position-indexing is what made the legacy path
+          brittle, and this format has merged cells with a two-row header, so names
+          are both safer and clearer.
+
+Dispatch is on the file's magic bytes, not its extension: a ZIP starts with 'PK\x03\x04'.
+Extensions have already proved unreliable here, and content cannot lie.
 
 XLS flat-cell layout after XML parse:
   [0]  'Purchase Order'
@@ -66,11 +82,7 @@ class SwiggyParser(BaseParser):
         paths = raw_message.attachment_paths or []
         if not isinstance(paths, list):
             return False
-        return any(
-            att.get("filename", "").lower().endswith(".xls")
-            for att in paths
-            if isinstance(att, dict)
-        )
+        return _find_spreadsheet(paths) is not None
 
     def parse(self, raw_message: Any) -> ParseResult:
         try:
@@ -87,14 +99,17 @@ class SwiggyParser(BaseParser):
 
     def _do_parse(self, raw_message: Any) -> ParseResult:
         paths = raw_message.attachment_paths or []
-        xls_att = next(
-            (att for att in paths if isinstance(att, dict) and att.get("filename", "").lower().endswith(".xls")),
-            None,
-        )
+        xls_att = _find_spreadsheet(paths)
         if not xls_att:
+            seen = [
+                a.get("filename", "?") for a in paths if isinstance(a, dict)
+            ] or ["(none)"]
             return ParseResult(
                 success=False,
-                errors=["No .xls attachment found — cannot parse Swiggy PO"],
+                errors=[
+                    "No .xls/.xlsx attachment found — cannot parse Swiggy PO. "
+                    f"Attachments on this email: {', '.join(seen)}"
+                ],
                 parser_name="SwiggyParser",
             )
 
@@ -114,31 +129,38 @@ class SwiggyParser(BaseParser):
                 parser_name="SwiggyParser",
             )
 
-        cells = _flat_cells(content)
-        if not cells:
+        # Dispatch on content, not extension — see the module docstring.
+        if _is_ooxml(content):
+            fmt = "xlsx"
+            extracted, extract_errors = _extract_ooxml(content)
+        else:
+            fmt = "spreadsheetml"
+            extracted, extract_errors = _extract_spreadsheetml(content)
+
+        if extracted is None:
             return ParseResult(
                 success=False,
-                errors=["Could not parse SpreadsheetML XML — empty or invalid file"],
+                errors=[f"Could not read the {fmt} attachment", *extract_errors],
                 parser_name="SwiggyParser",
             )
 
-        po_number = _extract_after(cells, "PO No :") or _po_from_filename(xls_att.get("filename", ""))
+        po_number = extracted.po_number or _po_from_filename(xls_att.get("filename", ""))
         if not po_number:
             return ParseResult(
                 success=False,
-                errors=["Cannot determine PO number from XLS or filename"],
+                errors=[f"Cannot determine PO number from the {fmt} file or its filename"],
                 parser_name="SwiggyParser",
             )
 
-        po_date = _parse_date_flexible(_extract_after(cells, "PO Date :"))
-        delivery_date = _parse_date_flexible(_extract_after(cells, "Expected Delivery Date:"))
-        ship_addr_raw = _extract_after(cells, "Shipping Address")
+        po_date = extracted.po_date
+        delivery_date = extracted.delivery_date
+        ship_addr_raw = extracted.ship_to_raw
 
-        lines, line_errors = _parse_line_items(cells)
+        lines, line_errors = extracted.lines, list(extract_errors)
         if not lines:
             return ParseResult(
                 success=False,
-                errors=["No line items found in XLS"] + line_errors,
+                errors=[f"No line items found in the {fmt} file"] + line_errors,
                 parser_name="SwiggyParser",
             )
 
@@ -148,10 +170,10 @@ class SwiggyParser(BaseParser):
         igst_total = _sum_decimal(li.igst_amount for li in lines if li.igst_amount)
         grand_total = subtotal + cgst_total + sgst_total + igst_total
 
-        # Prefer footer grand total from the XLS if present
-        xls_grand_total = _extract_footer_grand_total(cells)
-        if xls_grand_total:
-            grand_total = xls_grand_total
+        # Prefer the file's own footer grand total — it is what the retailer will
+        # reconcile against, including any rounding we would not reproduce by summing.
+        if extracted.grand_total:
+            grand_total = extracted.grand_total
 
         doc = EDI850(
             id=uuid.uuid4(),
@@ -178,6 +200,7 @@ class SwiggyParser(BaseParser):
             po_number=po_number,
             line_count=len(lines),
             grand_total=str(grand_total),
+            source_format=fmt,
         )
         return ParseResult(
             success=True,
@@ -185,6 +208,312 @@ class SwiggyParser(BaseParser):
             warnings=line_errors,
             parser_name="SwiggyParser",
         )
+
+
+# ── Attachment selection & format dispatch ────────────────────────────────────
+
+_SPREADSHEET_EXTS = (".xlsx", ".xls")
+
+
+def _find_spreadsheet(paths: list[Any]) -> dict[str, Any] | None:
+    """
+    Pick the spreadsheet attachment, preferring .xlsx.
+
+    Both generations ship a .pdf alongside the data file, and the PDF is never the one
+    we want. Order matters: ".xls" is a prefix of ".xlsx", so a naive endswith(".xls")
+    check misses the current format entirely — which is exactly the bug that silently
+    failed 183 POs from 2026-08-06 onward.
+    """
+    files = [a for a in paths if isinstance(a, dict) and a.get("url")]
+    for ext in _SPREADSHEET_EXTS:
+        for att in files:
+            if att.get("filename", "").lower().endswith(ext):
+                return att
+    return None
+
+
+def _is_ooxml(content: bytes) -> bool:
+    """OOXML (.xlsx) is a ZIP; SpreadsheetML is plain XML text."""
+    return content[:4] == b"PK\x03\x04"
+
+
+class _Sheet:
+    """Format-neutral extraction result, so assembly of the EDI850 stays in one place."""
+
+    __slots__ = ("po_number", "po_date", "delivery_date", "ship_to_raw", "lines", "grand_total")
+
+    def __init__(
+        self,
+        po_number: str | None = None,
+        po_date: date | None = None,
+        delivery_date: date | None = None,
+        ship_to_raw: str | None = None,
+        lines: list[EDI850Line] | None = None,
+        grand_total: Decimal | None = None,
+    ) -> None:
+        self.po_number = po_number
+        self.po_date = po_date
+        self.delivery_date = delivery_date
+        self.ship_to_raw = ship_to_raw
+        self.lines = lines or []
+        self.grand_total = grand_total
+
+
+def _extract_spreadsheetml(content: bytes) -> tuple[_Sheet | None, list[str]]:
+    """LEGACY path — flat positional cell list. Behaviour unchanged."""
+    cells = _flat_cells(content)
+    if not cells:
+        return None, ["SpreadsheetML XML was empty or invalid"]
+
+    lines, errors = _parse_line_items(cells)
+    return _Sheet(
+        po_number=_extract_after(cells, "PO No :"),
+        po_date=_parse_date_flexible(_extract_after(cells, "PO Date :")),
+        delivery_date=_parse_date_flexible(_extract_after(cells, "Expected Delivery Date:")),
+        ship_to_raw=_extract_after(cells, "Shipping Address"),
+        lines=lines,
+        grand_total=_extract_footer_grand_total(cells),
+    ), errors
+
+
+# ── Current format: OOXML .xlsx ───────────────────────────────────────────────
+
+def _extract_ooxml(content: bytes) -> tuple[_Sheet | None, list[str]]:
+    """
+    CURRENT path — real .xlsx read as a 2D grid.
+
+    openpyxl is loaded WITHOUT read_only: Swiggy's generator writes an inaccurate
+    <dimension> record, and read_only trusts it, reporting a 1x1 sheet for a file that
+    actually holds 87 rows.
+    """
+    import io
+
+    from openpyxl import load_workbook
+
+    try:
+        wb = load_workbook(io.BytesIO(content), data_only=True)
+    except Exception as exc:  # noqa: BLE001 - surfaced to the caller as a parse failure
+        return None, [f"openpyxl could not open the .xlsx: {exc}"]
+
+    ws = wb[wb.sheetnames[0]]
+    rows: list[tuple[Any, ...]] = list(ws.iter_rows(values_only=True))
+    if not rows:
+        return None, ["The .xlsx contained no rows"]
+
+    header_idx = _ooxml_header_row(rows)
+    if header_idx is None:
+        return None, ["Could not locate the 'Item Code' header row in the .xlsx"]
+
+    colmap = _ooxml_column_map(rows, header_idx)
+    lines, errors = _ooxml_lines(rows, header_idx, colmap)
+
+    return _Sheet(
+        po_number=_ooxml_labelled(rows, "PO No"),
+        po_date=_parse_date_flexible(_ooxml_labelled(rows, "PO Date")),
+        delivery_date=_parse_date_flexible(_ooxml_labelled(rows, "Expected Delivery Date")),
+        ship_to_raw=_ooxml_shipping_address(rows),
+        lines=lines,
+        grand_total=_ooxml_grand_total(rows),
+    ), errors
+
+
+def _cell(value: Any) -> str:
+    return "" if value is None else str(value).strip()
+
+
+def _ooxml_labelled(rows: list[tuple[Any, ...]], label: str) -> str | None:
+    """
+    Value for a 'Label :' header field.
+
+    Labels and values sit in the same row but in distant columns (label at ~11, value
+    at ~18) with merged blanks between, so the value is the next non-empty cell to the
+    right rather than a fixed offset. Trailing ':' and whitespace vary between files,
+    hence the normalised comparison.
+    """
+    want = label.lower().rstrip(" :")
+    for row in rows:
+        for i, raw in enumerate(row):
+            if _cell(raw).lower().rstrip(" :") != want:
+                continue
+            for nxt in row[i + 1:]:
+                if _cell(nxt):
+                    return _cell(nxt)
+    return None
+
+
+def _ooxml_shipping_address(rows: list[tuple[Any, ...]]) -> str | None:
+    """
+    Shipping address block, which sits in the row *below* its heading.
+
+    'Billing Address' and 'Shipping Address' are side-by-side headings; the addresses
+    are underneath in the matching columns. We take the cell directly below the
+    'Shipping Address' heading, falling back to billing — an order still has to be
+    parseable when only one address block is populated.
+    """
+    for r, row in enumerate(rows):
+        for i, raw in enumerate(row):
+            if _cell(raw).lower() != "shipping address":
+                continue
+            if r + 1 < len(rows):
+                below = rows[r + 1]
+                if i < len(below) and _cell(below[i]):
+                    return _cell(below[i])
+                for cell in below:
+                    if _cell(cell):
+                        return _cell(cell)
+    return None
+
+
+def _ooxml_header_row(rows: list[tuple[Any, ...]]) -> int | None:
+    """Index of the row containing the 'Item Code' column heading."""
+    for r, row in enumerate(rows):
+        if any(_cell(c).lower() == "item code" for c in row):
+            return r
+    return None
+
+
+def _ooxml_column_map(rows: list[tuple[Any, ...]], header_idx: int) -> dict[str, int]:
+    """
+    Map logical field -> column index, by reading the header names.
+
+    The header spans two rows: group labels ('CGST', 'SGST/UGST', 'IGST') on the first,
+    sub-labels ('Rate', 'Amt (INR)') on the second, with merged cells leaving blanks.
+    Carrying the last non-empty group forward reconstructs which group each sub-column
+    belongs to, so 'CGST'+'Amt' resolves to a real column.
+
+    Reading by name rather than fixed offsets is deliberate: this file already shifts
+    columns between the item rows and the totals row, and Swiggy has changed the layout
+    once without warning.
+    """
+    header = rows[header_idx]
+    sub = rows[header_idx + 1] if header_idx + 1 < len(rows) else ()
+
+    groups: list[str] = []
+    current = ""
+    for c in header:
+        text = _cell(c)
+        if text:
+            current = text
+        groups.append(current)
+
+    colmap: dict[str, int] = {}
+
+    def find(pred) -> int | None:
+        for i in range(len(groups)):
+            if pred(groups[i], _cell(sub[i]) if i < len(sub) else ""):
+                return i
+        return None
+
+    simple = {
+        "item_code": "item code",
+        "description": "item desc",
+        "hsn": "hsn code",
+        "qty": "qty",
+        "mrp": "mrp",
+        "unit_price": "unit base cost",
+        "taxable": "taxable value",
+        "total": "total (inr)",
+    }
+    for key, name in simple.items():
+        idx = find(lambda g, _s, n=name: g.lower().startswith(n))
+        if idx is not None:
+            colmap[key] = idx
+
+    for key, group in (("cgst", "cgst"), ("sgst", "sgst"), ("igst", "igst")):
+        rate = find(lambda g, s, gr=group: g.lower().startswith(gr) and s.lower() == "rate")
+        amt = find(lambda g, s, gr=group: g.lower().startswith(gr) and s.lower().startswith("amt"))
+        if rate is not None:
+            colmap[f"{key}_rate"] = rate
+        if amt is not None:
+            colmap[f"{key}_amt"] = amt
+
+    return colmap
+
+
+def _ooxml_lines(
+    rows: list[tuple[Any, ...]], header_idx: int, colmap: dict[str, int]
+) -> tuple[list[EDI850Line], list[str]]:
+    """
+    Build line items from the grid.
+
+    A data row is one whose first column is a plain integer serial number — that is
+    what separates the ~39 item rows from the totals row beneath them, which leaves
+    column 0 blank and would otherwise be read as a line with no SKU.
+    """
+    lines: list[EDI850Line] = []
+    errors: list[str] = []
+
+    def get(row: tuple[Any, ...], key: str) -> str:
+        i = colmap.get(key)
+        return _cell(row[i]) if i is not None and i < len(row) else ""
+
+    for row in rows[header_idx + 1:]:
+        serial = _cell(row[0] if row else "")
+        if not serial.isdigit():
+            continue
+
+        item_code = get(row, "item_code")
+        if not item_code:
+            continue
+
+        line_no = int(serial)
+        try:
+            qty = _to_decimal(get(row, "qty"))
+            if qty <= _ZERO:
+                errors.append(f"Line {line_no} ({item_code}): quantity is {qty}, skipped")
+                continue
+
+            taxable = _to_decimal(get(row, "taxable"))
+            unit_price = _to_decimal(get(row, "unit_price"))
+            if unit_price <= _ZERO and qty:
+                unit_price = (taxable / qty).quantize(Decimal("0.000001"), ROUND_HALF_UP)
+
+            cgst_amt = _to_decimal(get(row, "cgst_amt"))
+            sgst_amt = _to_decimal(get(row, "sgst_amt"))
+            igst_amt = _to_decimal(get(row, "igst_amt"))
+            total = _to_decimal(get(row, "total")) or (taxable + cgst_amt + sgst_amt + igst_amt)
+
+            lines.append(EDI850Line(
+                line_number=line_no,
+                buyer_sku=item_code,
+                buyer_sku_description=get(row, "description").replace("\n", " ").strip() or None,
+                hsn_code=get(row, "hsn") or None,
+                ordered_qty=qty,
+                buyer_uom="PC",
+                unit_price=unit_price,
+                # MRP is present in the file but EDI850Line has no field for it —
+                # passing it would be silently dropped, so it is deliberately not sent.
+                taxable_amount=taxable or None,
+                cgst_rate=_to_decimal(get(row, "cgst_rate")) or None,
+                cgst_amount=cgst_amt or None,
+                sgst_rate=_to_decimal(get(row, "sgst_rate")) or None,
+                sgst_amount=sgst_amt or None,
+                igst_rate=_to_decimal(get(row, "igst_rate")) or None,
+                igst_amount=igst_amt or None,
+                line_total=total.quantize(_TWO_DP, ROUND_HALF_UP) if total else None,
+            ))
+        except Exception as exc:  # noqa: BLE001 - one bad row must not lose the PO
+            errors.append(f"Line {line_no} ({item_code}): {exc}")
+
+    return lines, errors
+
+
+def _ooxml_grand_total(rows: list[tuple[Any, ...]]) -> Decimal | None:
+    """
+    Grand total from the labelled footer row.
+
+    Taken from the 'Grand Total (INR)' label rather than the unlabelled totals row
+    above it — that row's columns are offset from the item rows by a merged cell, so
+    reading it positionally picks up the wrong figure.
+    """
+    for row in rows:
+        for i, raw in enumerate(row):
+            if _cell(raw).lower().startswith("grand total"):
+                for nxt in row[i + 1:]:
+                    value = _to_decimal(_cell(nxt))
+                    if value > _ZERO:
+                        return value
+    return None
 
 
 # ── XLS download & parse ──────────────────────────────────────────────────────

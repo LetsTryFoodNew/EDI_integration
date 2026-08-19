@@ -16,11 +16,13 @@ from app.models.edi_po import (
 from app.models.invoice import EdiInvoice, EdiInvoiceLineItem
 from app.models.master_data import (
     BillToMapping,
+    BranchMaster,
     MaterialMaster,
     SellerEntity,
     ShipToMapping,
     SkuMapping,
     TradingPartner,
+    WarehouseMaster,
 )
 from app.models.outbound import EdiOutboundMessage
 from app.models.raw_messages import RawMessage
@@ -44,9 +46,11 @@ __all__ = [
     "MaterialMaster",
     "SellerEntity",
     "BillToMapping",
+    "BranchMaster",
     "ShipToMapping",
     "SkuMapping",
     "TradingPartner",
+    "WarehouseMaster",
     "AuditLog",
     "EdiOutboundMessage",
     "RawMessage",

@@ -11,20 +11,21 @@ Key design choices:
   - verify_ssl is configurable — MUST be True in production (see CLAUDE.md §7).
   - Never raises on 404 in get_*; returns None instead.
 
-B1 base paths:
-  Login:          POST  /b1s/v1/Login
-  Logout:         POST  /b1s/v1/Logout
-  Sales Orders:   POST  /b1s/v1/Orders
-  Deliveries:     POST  /b1s/v1/DeliveryNotes
-  AR Invoices:    POST  /b1s/v1/Invoices
-  Returns:        POST  /b1s/v1/Returns
-  Credit Notes:   POST  /b1s/v1/CreditNotes
-  Items:          GET   /b1s/v1/Items('{ItemCode}')
-  Business Ptrs:  GET   /b1s/v1/BusinessPartners('{CardCode}')
-  Generic query:  GET   /b1s/v1/{Entity}?$filter=...
+B1 paths, relative to the Service Layer base (``/b1s/v1`` or ``/b1s/v2`` — taken
+from B1_SERVICE_LAYER_URL, see _split_base_url):
+  Login / Logout: POST  /Login, /Logout
+  Sales Orders:   POST  /Orders
+  Deliveries:     POST  /DeliveryNotes
+  AR Invoices:    POST  /Invoices
+  Returns:        POST  /Returns
+  Credit Notes:   POST  /CreditNotes
+  Items:          GET   /Items('{ItemCode}')
+  Business Ptrs:  GET   /BusinessPartners('{CardCode}')
+  Generic query:  GET   /{Entity}?$filter=...
 """
 from __future__ import annotations
 
+import re
 import time
 from typing import Any
 
@@ -37,8 +38,28 @@ from app.sap_b1.session_pool import SessionPool
 log = structlog.get_logger(__name__)
 
 _B1_API_BASE = "/b1s/v1"
+_API_BASE_RE = re.compile(r"/b1s/v\d+/?$", re.IGNORECASE)
+
+
+def _split_base_url(url: str) -> tuple[str, str]:
+    """
+    Separate the server root from the Service Layer path.
+
+    B1_SERVICE_LAYER_URL is written both ways in the wild — bare host
+    (``https://host:50001``) and full endpoint (``https://host:50000/b1s/v2``) — and
+    the .env.example ships the second form. Appending a fixed "/b1s/v1" to that gives
+    ``/b1s/v2/b1s/v1/Orders``, a 404 whose message says nothing about the real cause.
+    Detect the suffix instead, so both spellings work and the version in the URL is
+    honoured rather than overridden.
+    """
+    trimmed = url.rstrip("/")
+    match = _API_BASE_RE.search(trimmed)
+    if match:
+        return trimmed[: match.start()], match.group(0).rstrip("/")
+    return trimmed, _B1_API_BASE
 _REQUEST_TIMEOUT = 60   # seconds
 _MAX_RETRIES = 1        # retry once after session renewal
+_MAX_QUERY_PAGES = 200  # guard against an unbounded $skip loop (200 x 20 = 4000 rows)
 
 
 class ServiceLayerClient:
@@ -59,7 +80,7 @@ class ServiceLayerClient:
     ) -> None:
         if not base_url:
             raise ValueError("B1 base_url must not be empty")
-        self._base_url = base_url.rstrip("/")
+        self._base_url, self._api_base = _split_base_url(base_url)
         self._company_db = company_db
         self._username = username
         self._password = password
@@ -69,6 +90,11 @@ class ServiceLayerClient:
             login_fn=self._login,
             logout_fn=self._logout,
         )
+
+    @property
+    def api_base(self) -> str:
+        """Service Layer path prefix in use, e.g. "/b1s/v2". Handy for audit logging."""
+        return self._api_base
 
     # ── Document operations ───────────────────────────────────────────────────
 
@@ -112,7 +138,10 @@ class ServiceLayerClient:
     ) -> list[dict[str, Any]]:
         """
         Generic OData GET with optional $select, $filter, $top.
-        Returns the `value` array from the OData response.
+
+        Follows @odata.nextLink and returns **every** page, so a caller reading a
+        master-data table gets the whole table. Passing `top` disables paging —
+        an explicit $top means the caller wants exactly that many rows.
         """
         query_params: dict[str, str] = dict(params or {})
         if select:
@@ -122,8 +151,32 @@ class ServiceLayerClient:
         if top is not None:
             query_params["$top"] = str(top)
 
-        result = self._get(f"/{entity}", params=query_params, operation=f"query_{entity}")
-        return result.get("value", [])
+        # Service Layer paginates every collection (default 20 rows) and signals more
+        # with @odata.nextLink. Returning just the first page looks like a successful
+        # read of a short table — that is how a 20-warehouse company silently loses
+        # half its warehouses. Follow the links unless the caller asked for a $top.
+        operation = f"query_{entity}"
+        rows: list[dict[str, Any]] = []
+        result = self._get(f"/{entity}", params=query_params, operation=operation)
+        rows.extend(result.get("value", []))
+
+        if top is not None:
+            return rows
+
+        pages = 1
+        while (next_link := result.get("@odata.nextLink")) and pages < _MAX_QUERY_PAGES:
+            # nextLink is relative to the Service Layer base, e.g.
+            # "Warehouses?$skip=20" — params are already baked into it.
+            result = self._get(f"/{next_link.lstrip('/')}", operation=operation)
+            rows.extend(result.get("value", []))
+            pages += 1
+
+        if pages >= _MAX_QUERY_PAGES and result.get("@odata.nextLink"):
+            log.warning(
+                "b1.query_page_cap_hit", entity=entity, pages=pages, rows=len(rows),
+                hint="Result truncated — narrow the query with a $filter.",
+            )
+        return rows
 
     # ── Session management ────────────────────────────────────────────────────
 
@@ -204,7 +257,7 @@ class ServiceLayerClient:
         params: dict[str, str] | None,
         operation: str,
     ) -> dict[str, Any]:
-        url = f"{self._base_url}{_B1_API_BASE}{path}"
+        url = f"{self._base_url}{self._api_base}{path}"
         cookies = {"B1SESSION": session_id, "CompanyDB": self._company_db}
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
 
@@ -252,7 +305,7 @@ class ServiceLayerClient:
 
     def _login(self) -> str:
         """Create a new B1 session and return its SessionId."""
-        url = f"{self._base_url}{_B1_API_BASE}/Login"
+        url = f"{self._base_url}{self._api_base}/Login"
         payload = {
             "CompanyDB": self._company_db,
             "UserName": self._username,
@@ -286,7 +339,7 @@ class ServiceLayerClient:
         """Politely close a B1 session."""
         try:
             requests.post(
-                f"{self._base_url}{_B1_API_BASE}/Logout",
+                f"{self._base_url}{self._api_base}/Logout",
                 cookies={"B1SESSION": session_id, "CompanyDB": self._company_db},
                 verify=self._verify_ssl,
                 timeout=10,

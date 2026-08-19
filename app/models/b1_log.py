@@ -5,8 +5,9 @@ import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, and_
 from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -47,3 +48,26 @@ class B1ApiLog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
 
     purchase_order: Mapped[EdiPurchaseOrder | None] = relationship("EdiPurchaseOrder", back_populates="b1_logs")
+
+    @hybrid_property
+    def success(self) -> bool:
+        """
+        Whether the call succeeded, derived from the HTTP status rather than stored.
+
+        There is deliberately no `success` column: it would be a second source of truth
+        that could disagree with `response_status`, and B1 failures are already fully
+        described by the status plus `error_message`. A network error is logged with
+        status 0, which is correctly not a success.
+
+        A hybrid_property so the API can both read it per-row and filter on it in SQL
+        (`GET /api/b1-logs?success=false`) without loading the table into Python.
+        """
+        return self.response_status is not None and 200 <= self.response_status < 300
+
+    @success.expression      # type: ignore[no-redef]
+    def success(cls):        # noqa: N805
+        return and_(
+            cls.response_status.is_not(None),
+            cls.response_status >= 200,
+            cls.response_status < 300,
+        )

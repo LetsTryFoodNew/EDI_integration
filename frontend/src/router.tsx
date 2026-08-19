@@ -7,6 +7,7 @@ import POListPage from "@/features/pos/POListPage";
 import PODetailPage from "@/features/pos/PODetailPage";
 import ExceptionsPage from "@/features/exceptions/ExceptionsPage";
 import MasterDataPage from "@/features/master-data/MasterDataPage";
+import WarehousesPage from "@/features/warehouses/WarehousesPage";
 import B1LogsPage from "@/features/b1-logs/B1LogsPage";
 import InboxPage from "@/features/inbox/InboxPage";
 import InboxDetailPage from "@/features/inbox/InboxDetailPage";
@@ -40,6 +41,7 @@ export const router = createBrowserRouter(
         { path: "/pos/:poId", element: <PODetailPage /> },
         { path: "/exceptions", element: <ExceptionsPage /> },
         { path: "/master-data", element: <MasterDataPage /> },
+        { path: "/master-data/warehouses", element: <WarehousesPage /> },
         { path: "/b1-logs", element: <B1LogsPage /> },
       ],
     },

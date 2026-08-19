@@ -157,8 +157,28 @@ def get_po(
         select(EdiOutboundMessage).where(EdiOutboundMessage.po_id == po.id).order_by(EdiOutboundMessage.created_at)
     ).scalars().all()
 
+    # Newest live version of this PO, if the one being viewed is not it.
+    current_id: uuid.UUID | None = None
+    current_ver: int | None = None
+    if str(po.po_status) == "SUPERSEDED":
+        newer = db.execute(
+            select(EdiPurchaseOrder)
+            .where(
+                EdiPurchaseOrder.trading_partner_id == po.trading_partner_id,
+                EdiPurchaseOrder.buyer_po_number == po.buyer_po_number,
+                EdiPurchaseOrder.version > po.version,
+                EdiPurchaseOrder.deleted_at.is_(None),
+            )
+            .order_by(EdiPurchaseOrder.version.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if newer is not None:
+            current_id, current_ver = newer.id, newer.version
+
     return PODetail(
         id=po.id,
+        current_version_id=current_id,
+        current_version=current_ver,
         partner_code=partner.code if partner else "",
         partner_name=partner.name if partner else "",
         buyer_po_number=po.buyer_po_number,
@@ -216,7 +236,8 @@ def get_po(
                 id=log_entry.id,
                 http_method=log_entry.http_method,
                 endpoint=log_entry.endpoint,
-                http_status=log_entry.http_status,
+                # The column is response_status; the API calls it http_status.
+                http_status=log_entry.response_status,
                 success=log_entry.success,
                 error_code=log_entry.error_code,
                 error_message=log_entry.error_message,

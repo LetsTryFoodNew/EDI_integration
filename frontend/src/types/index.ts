@@ -128,6 +128,9 @@ export interface PODetail {
   raw_message_id: string | null;
   created_at: string;
   updated_at: string;
+  // Present only on a SUPERSEDED PO: points at the live version that replaced it.
+  current_version_id: string | null;
+  current_version: number | null;
   lines: POLineItem[];
   validation_issues: ValidationIssue[];
   b1_push_history: B1PushHistoryItem[];
@@ -313,6 +316,51 @@ export interface CustomerDetail extends TradingPartner {
   bill_to_mappings: CustomerBillTo[];
 }
 
+// ── Branch Master (SAP OBPL) & Warehouse Master (SAP OWHS) ────────────────────
+// Our own org structure, unlike CustomerShipTo / CustomerBillTo which describe the
+// retailer's locations. There is no mapping decision here: SAP owns every business
+// field, and `is_active` / `notes` are the only columns the dashboard may write.
+
+export interface BranchMaster {
+  id: string;
+  bpl_id: number;                      // OBPL.BPLId — the SAP key
+  bpl_name: string;                    // OBPL.BPLName
+  disabled: boolean;                   // OBPL.Disabled — SAP's flag, Y/N on the wire
+  address: string | null;
+  street: string | null;
+  block: string | null;
+  city: string | null;
+  zip_code: string | null;
+  state: string | null;
+  country: string | null;
+  gstin: string | null;
+  is_active: boolean;                  // ours — ops can park a branch locally
+  notes: string | null;                // ours
+  warehouse_count: number;             // derived
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WarehouseMaster {
+  id: string;
+  whs_code: string;                    // OWHS.WhsCode — the SAP key
+  whs_name: string;                    // OWHS.WhsName
+  bpl_id: number;                      // resolved from the parent branch
+  branch_name: string | null;          // resolved from the parent branch
+  inactive: boolean;                   // OWHS.Inactive — SAP's flag
+  location: number | null;             // OWHS.Location
+  street: string | null;
+  block: string | null;
+  city: string | null;
+  zip_code: string | null;
+  state: string | null;
+  country: string | null;
+  is_active: boolean;                  // ours
+  notes: string | null;                // ours
+  created_at: string;
+  updated_at: string;
+}
+
 export interface MasterDataSyncResult {
   created: number;
   updated: number;
@@ -380,4 +428,65 @@ export interface Invoice {
   asn_status: string | null;
   outbound_status: string | null;
   line_items: InvoiceLineItem[];
+}
+
+// ── SAP push: branch / warehouse selection ────────────────────────────────────
+// A B1 Sales Order needs routing the retailer's PO cannot supply. The branch is the
+// from-state for place of supply, so it decides CGST+SGST vs IGST; the warehouse must
+// belong to it or B1 rejects the document. Both are chosen by the operator.
+
+export interface B1AddressOption {
+  address_name: string;
+  address_type: string;              // bo_ShipTo | bo_BillTo
+  city: string | null;
+  state: string | null;
+  zip_code: string | null;
+  gstin: string | null;
+  matches_po: boolean;               // PIN or state matches what the PO stated
+}
+
+export interface WarehouseOption {
+  whs_code: string;
+  whs_name: string;
+  bpl_id: number;
+}
+
+export interface BranchOption {
+  bpl_id: number;
+  bpl_name: string;
+  state: string | null;
+  gstin: string | null;
+  warehouses: WarehouseOption[];
+}
+
+export interface DispatchOptions {
+  po_id: string;
+  buyer_po_number: string;
+  partner_code: string;
+  b1_card_code: string | null;
+  ship_to_state: string | null;
+  ship_to_pincode: string | null;
+  branches: BranchOption[];
+  addresses: B1AddressOption[];
+  address_lookup_error: string | null;
+  selected_bpl_id: number | null;
+  selected_whs_code: string | null;
+  selected_ship_to_code: string | null;
+  selected_pay_to_code: string | null;
+  /** bpl_id (as string) -> "CSGST" | "IGST" | "UNKNOWN" */
+  tax_by_branch: Record<string, string>;
+}
+
+export interface SapPushSelection {
+  bpl_id: number;
+  whs_code: string;
+  ship_to_code?: string | null;
+  pay_to_code?: string | null;
+}
+
+export interface SapPreview {
+  po_id: string;
+  endpoint: string;
+  payload: Record<string, unknown>;
+  warnings: string[];
 }

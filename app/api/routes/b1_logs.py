@@ -36,17 +36,37 @@ def list_b1_logs(
 
     from app.models.b1_log import B1ApiLog
 
-    q = select(B1ApiLog).where().order_by(B1ApiLog.created_at.desc())
+    q = select(B1ApiLog).order_by(B1ApiLog.created_at.desc())
     if po_id is not None:
         q = q.where(B1ApiLog.po_id == po_id)
     if success is not None:
-        q = q.where(B1ApiLog.success == success)
+        # mypy reads the hybrid_property's Python getter (-> bool) rather than its
+        # @success.expression overload, so it sees a plain bool here. At runtime this
+        # is a SQL clause over response_status — covered by test_b1_log_serialization.
+        q = q.where(B1ApiLog.success == success)  # type: ignore[arg-type]
 
     total = db.execute(select(func.count()).select_from(q.subquery())).scalar_one()
     rows = db.execute(q.limit(limit).offset(offset)).scalars().all()
 
+    # Built field by field rather than model_validate: the API's names differ from
+    # the column names (http_status/response_status, *_payload/*_body), and `success`
+    # is derived. from_attributes would silently need all four to match.
     return PaginatedResponse(
-        items=[B1LogListItem.model_validate(r) for r in rows],
+        items=[
+            B1LogListItem(
+                id=r.id,
+                po_id=r.po_id,
+                http_method=r.http_method,
+                endpoint=r.endpoint,
+                http_status=r.response_status,
+                success=r.success,
+                error_code=r.error_code,
+                error_message=r.error_message,
+                duration_ms=r.duration_ms,
+                created_at=r.created_at,
+            )
+            for r in rows
+        ],
         total=total,
         limit=limit,
         offset=offset,
@@ -64,4 +84,17 @@ def get_b1_log(
     entry = db.get(B1ApiLog, log_id)
     if not entry:
         raise HTTPException(status_code=404, detail="Log entry not found")
-    return B1LogDetail.model_validate(entry)
+    return B1LogDetail(
+        id=entry.id,
+        po_id=entry.po_id,
+        http_method=entry.http_method,
+        endpoint=entry.endpoint,
+        request_payload=entry.request_body,
+        response_payload=entry.response_body,
+        http_status=entry.response_status,
+        success=entry.success,
+        error_code=entry.error_code,
+        error_message=entry.error_message,
+        duration_ms=entry.duration_ms,
+        created_at=entry.created_at,
+    )

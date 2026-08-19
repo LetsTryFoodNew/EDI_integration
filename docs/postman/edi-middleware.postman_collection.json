@@ -1,7 +1,7 @@
 {
   "info": {
-    "name": "EDI Middleware \u2014 Let's Try Foods (Full API)",
-    "description": "Complete API collection for the EDI Middleware (SAP Business One integration).\n\n\u2550\u2550\u2550 SETUP (2 minutes) \u2550\u2550\u2550\n\n1. Collection \u2192 Variables tab. Set:\n     baseUrl        http://localhost:8001                      (local Docker api)\n                    https://www.letstryfoods.com/edi-backend   (server)\n     email          your login email\n     password       your login password\n     webhookApiKey  BLINKIT webhook secret \u2014 only needed for folder 15\n\n   Get the webhook secret with:\n     SELECT webhook_secret FROM trading_partners WHERE code='BLINKIT';\n\n2. Run \"00 \u00b7 Health\" \u2014 confirms baseUrl is right before you debug anything else.\n3. Run \"01 \u00b7 Auth \u2192 Login\" \u2014 stores {{token}}; every other request then just works.\n\n\u2550\u2550\u2550 TWO KINDS OF AUTH \u2550\u2550\u2550\n\n  Folders 01-14   Authorization: Bearer {{token}}   (run Login first)\n  Folder 15       api-key: {{webhookApiKey}}        (no login \u2014 this is how partners call us)\n\nMixing these up is the single most common mistake. A webhook partner has no user\naccount, so a Bearer token is not an option for them.\n\n\u2550\u2550\u2550 ID CHAINING \u2550\u2550\u2550\n\nList requests capture ids into variables automatically, so run them before the\nrequests that use them:\n\n  List POs            \u2192 {{poId}}, {{poNumber}}\n  Get PO detail       \u2192 {{buyerSku}}\n  List invoices       \u2192 {{invoiceId}}\n  List customers      \u2192 {{partnerId}}\n  List items          \u2192 {{materialId}}\n  List ship-to        \u2192 {{shipToId}}\n  List bill-to        \u2192 {{billToId}}\n  List messages       \u2192 {{messageId}}\n  List exceptions     \u2192 {{issueId}}\n  List B1 logs        \u2192 {{b1LogId}}\n\nCheck the Postman Console (View \u2192 Show Postman Console) for what each one captured.\n\n\u2550\u2550\u2550 THINGS THAT WILL BITE YOU \u2550\u2550\u2550\n\n\u2022 /auth/login has NO /api prefix. Every other route does.\n\u2022 The api container publishes on 8001, not 8000.\n\u2022 Disabled query params are filters \u2014 tick them on to use them.\n\u2022 Invoice push: ALWAYS read results[]. An invoice can be stored yet HELD, with\n  asn_dispatched=false and the reason in issues[]. The counters alone will mislead you.\n\u2022 Sync order matters: Items BEFORE SKU mappings; Customers BEFORE anything partner-scoped.\n\u2022 Anything you POST creates real rows. Point baseUrl at localhost while testing.\n\nDummy data uses the fictional customer DEMOMART so it cannot collide with live partners.\n",
+    "name": "EDI Middleware — Let's Try Foods (Full API)",
+    "description": "Complete API collection for the EDI Middleware (SAP Business One integration).\n\n═══ SETUP (2 minutes) ═══\n\n1. Collection → Variables tab. Set:\n     baseUrl        http://localhost:8001                      (local Docker api)\n                    https://www.letstryfoods.com/edi-backend   (server)\n     email          your login email\n     password       your login password\n     webhookApiKey  BLINKIT webhook secret — only needed for folder 17\n\n   Get the webhook secret with:\n     SELECT webhook_secret FROM trading_partners WHERE code='BLINKIT';\n\n2. Run \"00 · Health\" — confirms baseUrl is right before you debug anything else.\n3. Run \"01 · Auth → Login\" — stores {{token}}; every other request then just works.\n\n═══ TWO KINDS OF AUTH ═══\n\n  Folders 01-16   Authorization: Bearer {{token}}   (run Login first)\n  Folder 17       api-key: {{webhookApiKey}}        (no login — this is how partners call us)\n\nMixing these up is the single most common mistake. A webhook partner has no user\naccount, so a Bearer token is not an option for them.\n\n═══ ID CHAINING ═══\n\nList requests capture ids into variables automatically, so run them before the\nrequests that use them:\n\n  List POs            → {{poId}}, {{poNumber}}\n  Get PO detail       → {{buyerSku}}\n  List invoices       → {{invoiceId}}\n  List customers      → {{partnerId}}\n  List items          → {{materialId}}\n  List ship-to        → {{shipToId}}\n  List bill-to        → {{billToId}}\n  List branches       → {{branchId}}\n  List warehouses     → {{warehouseId}}\n  List messages       → {{messageId}}\n  List exceptions     → {{issueId}}\n  List B1 logs        → {{b1LogId}}\n  Dispatch options    → {{bplId}}, {{whsCode}}\n\nCheck the Postman Console (View → Show Postman Console) for what each one captured.\n\n═══ THINGS THAT WILL BITE YOU ═══\n\n• /auth/login has NO /api prefix. Every other route does.\n• The api container publishes on 8001, not 8000.\n• Disabled query params are filters — tick them on to use them.\n• Invoice push: ALWAYS read results[]. An invoice can be stored yet HELD, with\n  asn_dispatched=false and the reason in issues[]. The counters alone will mislead you.\n• Sync order matters: Items BEFORE SKU mappings; Customers BEFORE anything partner-scoped.\n• Anything you POST creates real rows. Point baseUrl at localhost while testing.\n\nDummy data uses the fictional customer DEMOMART so it cannot collide with live partners.\n",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -22,7 +22,7 @@
     {
       "key": "token",
       "value": "",
-      "description": "Auto-filled by 01 \u00b7 Auth \u2192 Login"
+      "description": "Auto-filled by 01 · Auth → Login"
     },
     {
       "key": "webhookApiKey",
@@ -83,11 +83,27 @@
       "key": "b1LogId",
       "value": "",
       "description": "Auto-filled by List B1 logs"
+    },
+    {
+      "key": "branchId",
+      "value": ""
+    },
+    {
+      "key": "warehouseId",
+      "value": ""
+    },
+    {
+      "key": "bplId",
+      "value": ""
+    },
+    {
+      "key": "whsCode",
+      "value": ""
     }
   ],
   "item": [
     {
-      "name": "00 \u00b7 Health",
+      "name": "00 · Health",
       "description": "No auth. Run this first to confirm {{baseUrl}} is correct.",
       "item": [
         {
@@ -122,11 +138,11 @@
       ]
     },
     {
-      "name": "01 \u00b7 Auth",
-      "description": "Run Login first \u2014 it stores {{token}} for every other request.",
+      "name": "01 · Auth",
+      "description": "Run Login first — it stores {{token}} for every other request.",
       "item": [
         {
-          "name": "Login  \u2190 RUN FIRST",
+          "name": "Login  ← RUN FIRST",
           "request": {
             "method": "POST",
             "header": [
@@ -149,7 +165,7 @@
               "mode": "raw",
               "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}"
             },
-            "description": "Path is /auth/login \u2014 NOT /api/auth/login. Auth is the only router without the /api prefix."
+            "description": "Path is /auth/login — NOT /api/auth/login. Auth is the only router without the /api prefix."
           },
           "event": [
             {
@@ -219,7 +235,7 @@
       ]
     },
     {
-      "name": "02 \u00b7 Dashboard",
+      "name": "02 · Dashboard",
       "item": [
         {
           "name": "Today",
@@ -339,10 +355,10 @@
       ]
     },
     {
-      "name": "03 \u00b7 Purchase Orders",
+      "name": "03 · Purchase Orders",
       "item": [
         {
-          "name": "List POs  \u2192 sets {{poId}}",
+          "name": "List POs  → sets {{poId}}",
           "request": {
             "method": "GET",
             "header": [
@@ -515,7 +531,7 @@
                 "revalidate"
               ]
             },
-            "description": "Re-runs the validation rules \u2014 use after fixing a SKU mapping in SAP and re-syncing."
+            "description": "Re-runs the validation rules — use after fixing a SKU mapping in SAP and re-syncing."
           }
         },
         {
@@ -629,7 +645,7 @@
                   "        pm.collectionVariables.set('invoiceId', v);",
                   "        console.log('invoiceId = ' + v);",
                   "    } else {",
-                  "        console.log('No rows \u2014 invoiceId not set. Seed data first.');",
+                  "        console.log('No rows — invoiceId not set. Seed data first.');",
                   "    }",
                   "}",
                   "pm.test('ok', () => pm.response.to.have.status(200));"
@@ -637,11 +653,155 @@
               }
             }
           ]
+        },
+        {
+          "name": "Dispatch options (branches + warehouses + SAP addresses)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/pos/{{poId}}/dispatch-options",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "pos",
+                "{{poId}}",
+                "dispatch-options"
+              ]
+            },
+            "description": "Everything the push dialog needs.\n\n`tax_by_branch` precomputes CSGST vs IGST for every branch against this PO's ship-to state — the branch is the from-state for place of supply, so picking the wrong one produces a valid document with the wrong tax.\n\n`addresses` is read live from B1 (BP addresses are not mirrored locally: one customer here has 142). If SAP is unreachable, `address_lookup_error` is set and the rest still works."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    const d = pm.response.json();",
+                  "    console.log('tax by branch:', JSON.stringify(d.tax_by_branch));",
+                  "    const b = (d.branches || [])[0];",
+                  "    if (b) {",
+                  "        pm.collectionVariables.set('bplId', b.bpl_id);",
+                  "        if ((b.warehouses || [])[0]) pm.collectionVariables.set('whsCode', b.warehouses[0].whs_code);",
+                  "    }",
+                  "}",
+                  "pm.test('ok', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Preview SAP payload (sends nothing)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/pos/{{poId}}/preview-sap",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "pos",
+                "{{poId}}",
+                "preview-sap"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"bpl_id\": 5,\n  \"whs_code\": \"FG_MH\",\n  \"ship_to_code\": \"421302-HOT\",\n  \"pay_to_code\": \"421302-HOT\"\n}"
+            },
+            "description": "Builds the exact JSON that would be POSTed to /b1s/v2/Orders without sending it. Check VatGroup on the lines — CSGST@5 means the branch and ship-to are in the same state, IGST@5 means they are not.\n\n422 with a readable message if the warehouse does not belong to the branch, the branch is disabled, or a line has no B1 item code."
+          }
+        },
+        {
+          "name": "Push to SAP with branch + warehouse",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/pos/{{poId}}/push-to-sap-with",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "pos",
+                "{{poId}}",
+                "push-to-sap-with"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"bpl_id\": 5,\n  \"whs_code\": \"FG_MH\",\n  \"ship_to_code\": \"421302-HOT\",\n  \"pay_to_code\": \"421302-HOT\"\n}"
+            },
+            "description": "Creates the Sales Order synchronously and returns its DocNum/DocEntry.\n\nIdempotent: a PO already carrying a b1_sales_order_doc_entry is refused with 400 rather than creating a second document for one retailer PO.\n\nBlocked with 400 while the PO has unresolved ERROR-severity validation issues."
+          }
+        },
+        {
+          "name": "NEGATIVE — warehouse from another branch (expect 422)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/pos/{{poId}}/preview-sap",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "pos",
+                "{{poId}}",
+                "preview-sap"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"bpl_id\": 5,\n  \"whs_code\": \"FG_HR\"\n}"
+            },
+            "description": "FG_HR belongs to branch 1, not 5. B1 rejects a document whose warehouse and branch disagree, so we catch it before the call. A 200 here means the guard is broken."
+          }
         }
       ]
     },
     {
-      "name": "04 \u00b7 Invoices (SAP \u2192 us)",
+      "name": "04 · Invoices (SAP → us)",
       "description": "SAP pushes A/R Invoices here; receiving one raises and dispatches its ASN.",
       "item": [
         {
@@ -672,7 +832,7 @@
               "mode": "raw",
               "raw": "{\n  \"invoices\": [\n    {\n      \"invoice_number\": \"INV/2026/00871\",\n      \"invoice_date\": \"2026-08-18\",\n      \"b1_sales_order_doc_entry\": 4321,\n      \"partner_code\": \"ZEPTO\",\n      \"po_number\": \"{{poNumber}}\",\n      \"b1_invoice_doc_entry\": 9912,\n      \"b1_invoice_doc_num\": 100455,\n      \"irn\": null,\n      \"eway_bill_number\": \"381005498765\",\n      \"eway_bill_date\": \"2026-08-18\",\n      \"subtotal_amount\": 10450.0,\n      \"cgst_amount\": 627.0,\n      \"sgst_amount\": 627.0,\n      \"igst_amount\": 0.0,\n      \"cess_amount\": 0.0,\n      \"round_off\": 0.0,\n      \"grand_total\": 11704.0,\n      \"shipment_date\": \"2026-08-18\",\n      \"carrier\": \"Delhivery\",\n      \"tracking_number\": \"DL8827361925\",\n      \"line_items\": [\n        {\n          \"b1_item_code\": \"FG-ALM-200\",\n          \"buyer_sku\": \"{{buyerSku}}\",\n          \"po_line_number\": 1,\n          \"description\": \"Roasted Almonds 200g\",\n          \"hsn_code\": \"20081910\",\n          \"qty\": 50,\n          \"uom\": \"PCS\",\n          \"unit_price\": 209.0,\n          \"taxable_amount\": 10450.0,\n          \"cgst_rate\": 6.0,\n          \"cgst_amount\": 627.0,\n          \"sgst_rate\": 6.0,\n          \"sgst_amount\": 627.0,\n          \"igst_rate\": 0.0,\n          \"igst_amount\": 0.0,\n          \"cess_rate\": 0.0,\n          \"cess_amount\": 0.0,\n          \"line_total\": 11704.0,\n          \"batch_number\": \"LTF-202608-A\",\n          \"expiry_date\": \"2027-08-17\"\n        }\n      ]\n    }\n  ]\n}"
             },
-            "description": "Idempotent on invoice_number \u2014 re-pushing updates (typically to add the IRN) and never raises a second ASN.\n\n{{poNumber}} and {{buyerSku}} are filled by 'List POs' and 'Get PO detail'. Run those first, or hardcode real values.\n\nALWAYS read results[] \u2014 an invoice can be stored but HELD (asn_dispatched=false) with the reason in issues[]."
+            "description": "Idempotent on invoice_number — re-pushing updates (typically to add the IRN) and never raises a second ASN.\n\n{{poNumber}} and {{buyerSku}} are filled by 'List POs' and 'Get PO detail'. Run those first, or hardcode real values.\n\nALWAYS read results[] — an invoice can be stored but HELD (asn_dispatched=false) with the reason in issues[]."
           },
           "event": [
             {
@@ -758,7 +918,7 @@
                   "        pm.collectionVariables.set('invoiceId', v);",
                   "        console.log('invoiceId = ' + v);",
                   "    } else {",
-                  "        console.log('No rows \u2014 invoiceId not set. Seed data first.');",
+                  "        console.log('No rows — invoiceId not set. Seed data first.');",
                   "    }",
                   "}",
                   "pm.test('ok', () => pm.response.to.have.status(200));"
@@ -837,17 +997,17 @@
                 "send-asn"
               ]
             },
-            "description": "Held invoice (no ASN) \u2192 raises and queues it as an explicit operator override (audit-logged, held issues resolved).\nFailed dispatch \u2192 resets the retry counter and re-queues.\nReturns 409 if the ASN was already delivered and acknowledged."
+            "description": "Held invoice (no ASN) → raises and queues it as an explicit operator override (audit-logged, held issues resolved).\nFailed dispatch → resets the retry counter and re-queues.\nReturns 409 if the ASN was already delivered and acknowledged."
           }
         }
       ]
     },
     {
-      "name": "05 \u00b7 Master Data \u2014 Customers",
-      "description": "SAP POSTs, we store. GET reads our tables only \u2014 never SAP live.",
+      "name": "05 · Master Data — Customers",
+      "description": "SAP POSTs, we store. GET reads our tables only — never SAP live.",
       "item": [
         {
-          "name": "List customers  \u2192 sets {{partnerId}}",
+          "name": "List customers  → sets {{partnerId}}",
           "request": {
             "method": "GET",
             "header": [
@@ -898,7 +1058,7 @@
                   "        pm.collectionVariables.set('partnerId', v);",
                   "        console.log('partnerId = ' + v);",
                   "    } else {",
-                  "        console.log('No rows \u2014 partnerId not set. Seed data first.');",
+                  "        console.log('No rows — partnerId not set. Seed data first.');",
                   "    }",
                   "}",
                   "pm.test('ok', () => pm.response.to.have.status(200));"
@@ -936,7 +1096,7 @@
               "mode": "raw",
               "raw": "{\n  \"code\": \"DEMOMART\",\n  \"name\": \"Demo Mart Retail Private Limited\",\n  \"source_channel\": \"EMAIL\",\n  \"gmail_label\": \"DEMOMART_PO\",\n  \"webhook_secret\": null,\n  \"asn_sla_hours\": 24,\n  \"b1_card_code\": \"C00099\",\n  \"gstin\": \"27AAECD1234K1Z5\",\n  \"pan_card\": \"AAECD1234K\",\n  \"business_type\": \"Quick Commerce\",\n  \"group_name\": \"Modern Trade\",\n  \"phone_numbers\": [\n    \"+919812345601\",\n    \"+911244567890\"\n  ],\n  \"email_address\": \"po@demomart.in\",\n  \"is_active\": true\n}"
             },
-            "description": "Onboards a new trading partner. `code` is the natural key and is immutable afterwards.\n\nThe response carries `warnings` \u2014 e.g. EMAIL channel with no gmail_label, or WEBHOOK with no webhook_secret. A partner can exist yet receive nothing; warnings tell you which."
+            "description": "Onboards a new trading partner. `code` is the natural key and is immutable afterwards.\n\nThe response carries `warnings` — e.g. EMAIL channel with no gmail_label, or WEBHOOK with no webhook_secret. A partner can exist yet receive nothing; warnings tell you which."
           },
           "event": [
             {
@@ -951,7 +1111,7 @@
                   "        pm.collectionVariables.set('partnerId', v);",
                   "        console.log('partnerId = ' + v);",
                   "    } else {",
-                  "        console.log('No rows \u2014 partnerId not set. Seed data first.');",
+                  "        console.log('No rows — partnerId not set. Seed data first.');",
                   "    }",
                   "}",
                   "pm.test('ok', () => pm.response.to.have.status(200));"
@@ -1015,7 +1175,7 @@
               "mode": "raw",
               "raw": "{\n  \"name\": \"Demo Mart Retail Private Limited\",\n  \"b1_card_code\": \"C00099\",\n  \"gstin\": \"27AAECD1234K1Z5\",\n  \"pan_card\": \"AAECD1234K\",\n  \"email_address\": \"po@demomart.in\",\n  \"is_active\": true\n}"
             },
-            "description": "`code` and `source_channel` are immutable \u2014 sending a *changed* value returns 409 IMMUTABLE_FIELD."
+            "description": "`code` and `source_channel` are immutable — sending a *changed* value returns 409 IMMUTABLE_FIELD."
           }
         },
         {
@@ -1054,10 +1214,10 @@
       ]
     },
     {
-      "name": "06 \u00b7 Master Data \u2014 Item Master",
+      "name": "06 · Master Data — Item Master",
       "item": [
         {
-          "name": "List items  \u2192 sets {{materialId}}",
+          "name": "List items  → sets {{materialId}}",
           "request": {
             "method": "GET",
             "header": [
@@ -1113,7 +1273,7 @@
                   "        pm.collectionVariables.set('materialId', v);",
                   "        console.log('materialId = ' + v);",
                   "    } else {",
-                  "        console.log('No rows \u2014 materialId not set. Seed data first.');",
+                  "        console.log('No rows — materialId not set. Seed data first.');",
                   "    }",
                   "}",
                   "pm.test('ok', () => pm.response.to.have.status(200));"
@@ -1165,7 +1325,7 @@
                   "        pm.collectionVariables.set('materialId', v);",
                   "        console.log('materialId = ' + v);",
                   "    } else {",
-                  "        console.log('No rows \u2014 materialId not set. Seed data first.');",
+                  "        console.log('No rows — materialId not set. Seed data first.');",
                   "    }",
                   "}",
                   "pm.test('ok', () => pm.response.to.have.status(200));"
@@ -1236,14 +1396,14 @@
               "mode": "raw",
               "raw": "{\n  \"items\": [\n    {\n      \"item_code\": \"FG-ALM-200\",\n      \"item_name\": \"Roasted Almonds 200g\",\n      \"frgn_name\": \"Roasted Almonds 200g\",\n      \"hsn\": \"20081910\",\n      \"tax_rate\": 12.0,\n      \"itms_grp_cod\": 104,\n      \"items_group_name\": \"Dry Fruits\",\n      \"invntry_uom\": \"PCS\",\n      \"sal_unit_msr\": \"PCS\",\n      \"vat_group_pu\": \"GST12\",\n      \"vat_group_sa\": \"GST12\",\n      \"case_size\": 24,\n      \"lot_size\": 1,\n      \"grammage\": \"200g\",\n      \"ean_code\": \"8901234560017\",\n      \"mrp\": 349.0,\n      \"frozen_for\": false,\n      \"valid_for\": 1,\n      \"is_active\": true\n    },\n    {\n      \"item_code\": \"FG-CSH-200\",\n      \"item_name\": \"Roasted Cashews 200g\",\n      \"frgn_name\": \"Roasted Almonds 200g\",\n      \"hsn\": \"20081910\",\n      \"tax_rate\": 12.0,\n      \"itms_grp_cod\": 104,\n      \"items_group_name\": \"Dry Fruits\",\n      \"invntry_uom\": \"PCS\",\n      \"sal_unit_msr\": \"PCS\",\n      \"vat_group_pu\": \"GST12\",\n      \"vat_group_sa\": \"GST12\",\n      \"case_size\": 24,\n      \"lot_size\": 1,\n      \"grammage\": \"200g\",\n      \"ean_code\": \"8901234560024\",\n      \"mrp\": 449.0,\n      \"frozen_for\": false,\n      \"valid_for\": 1,\n      \"is_active\": true\n    }\n  ]\n}"
             },
-            "description": "Bulk upsert keyed on item_code. Safe to create \u2014 a new item carries catalogue data only."
+            "description": "Bulk upsert keyed on item_code. Safe to create — a new item carries catalogue data only."
           }
         }
       ]
     },
     {
-      "name": "07 \u00b7 Master Data \u2014 SKU Mapping",
-      "description": "SAP-owned. There is deliberately no PUT \u2014 fix mappings in SAP and re-sync.",
+      "name": "07 · Master Data — SKU Mapping",
+      "description": "SAP-owned. There is deliberately no PUT — fix mappings in SAP and re-sync.",
       "item": [
         {
           "name": "List SKU mappings",
@@ -1326,17 +1486,17 @@
               "mode": "raw",
               "raw": "{\n  \"mappings\": [\n    {\n      \"partner_code\": \"DEMOMART\",\n      \"buyer_sku\": \"DM-SKU-90001\",\n      \"b1_item_code\": \"FG-ALM-200\",\n      \"item_name\": \"Roasted Almonds 200g\",\n      \"unit_price\": 209.0,\n      \"margin\": 28.5,\n      \"qty_per_buyer_uom\": 1,\n      \"status\": true\n    }\n  ]\n}"
             },
-            "description": "b1_item_code must already exist in Item_master \u2014 an unknown code fails the row loudly rather than creating a dangling mapping. Sync items BEFORE mappings."
+            "description": "b1_item_code must already exist in Item_master — an unknown code fails the row loudly rather than creating a dangling mapping. Sync items BEFORE mappings."
           }
         }
       ]
     },
     {
-      "name": "08 \u00b7 Master Data \u2014 Ship-to",
+      "name": "08 · Master Data — Ship-to",
       "description": "Delivery locations. The ship-to state drives CGST/SGST vs IGST.",
       "item": [
         {
-          "name": "List ship-to  \u2192 sets {{shipToId}}",
+          "name": "List ship-to  → sets {{shipToId}}",
           "request": {
             "method": "GET",
             "header": [
@@ -1387,7 +1547,7 @@
                   "        pm.collectionVariables.set('shipToId', v);",
                   "        console.log('shipToId = ' + v);",
                   "    } else {",
-                  "        console.log('No rows \u2014 shipToId not set. Seed data first.');",
+                  "        console.log('No rows — shipToId not set. Seed data first.');",
                   "    }",
                   "}",
                   "pm.test('ok', () => pm.response.to.have.status(200));"
@@ -1426,7 +1586,7 @@
               "mode": "raw",
               "raw": "{\n  \"b1_whs_code\": \"WH01\",\n  \"is_active\": true,\n  \"poc_name\": \"Rakesh Sharma\",\n  \"poc_phone\": \"+919812345601\"\n}"
             },
-            "description": "Only b1_whs_code, is_active and the POC fields are writable. Address/GST come from sync \u2014 changing one here returns 409 IMMUTABLE_FIELD rather than silently dropping the edit."
+            "description": "Only b1_whs_code, is_active and the POC fields are writable. Address/GST come from sync — changing one here returns 409 IMMUTABLE_FIELD rather than silently dropping the edit."
           }
         },
         {
@@ -1459,17 +1619,17 @@
               "mode": "raw",
               "raw": "{\n  \"mappings\": [\n    {\n      \"partner_code\": \"DEMOMART\",\n      \"buyer_whs_code\": \"DM-DC-MUM-01\",\n      \"buyer_warehouse_name\": \"Demo Mart Mumbai DC\",\n      \"address_line\": \"Plot 14, MIDC, Andheri East, Mumbai 400093\",\n      \"address_type\": [\n        \"SHIP_TO\"\n      ],\n      \"street\": \"Plot 14, MIDC Industrial Area\",\n      \"block\": \"Andheri East\",\n      \"city\": \"Mumbai\",\n      \"zip_code\": \"400093\",\n      \"state\": \"Maharashtra\",\n      \"country\": \"India\",\n      \"gst_registration_no\": \"27AAECD1234K1Z5\",\n      \"gst_type\": [\n        \"Regular\"\n      ],\n      \"poc_name\": \"Rakesh Sharma\",\n      \"poc_email\": \"rakesh.s@demomart.in\",\n      \"poc_phone\": \"+919812345601\"\n    }\n  ]\n}"
             },
-            "description": "Natural key (partner_code, buyer_whs_code). Never touches b1_whs_code, so a re-sync cannot undo an ops mapping.\n\nALWAYS send `state` \u2014 without it the CGST/SGST vs IGST split cannot be computed."
+            "description": "Natural key (partner_code, buyer_whs_code). Never touches b1_whs_code, so a re-sync cannot undo an ops mapping.\n\nALWAYS send `state` — without it the CGST/SGST vs IGST split cannot be computed."
           }
         }
       ]
     },
     {
-      "name": "09 \u00b7 Master Data \u2014 Bill-to",
+      "name": "09 · Master Data — Bill-to",
       "description": "Invoicing entities. Separate from ship-to: the bill-to GSTIN prints on the invoice, the ship-to state decides the tax split.",
       "item": [
         {
-          "name": "List bill-to  \u2192 sets {{billToId}}",
+          "name": "List bill-to  → sets {{billToId}}",
           "request": {
             "method": "GET",
             "header": [
@@ -1520,7 +1680,7 @@
                   "        pm.collectionVariables.set('billToId', v);",
                   "        console.log('billToId = ' + v);",
                   "    } else {",
-                  "        console.log('No rows \u2014 billToId not set. Seed data first.');",
+                  "        console.log('No rows — billToId not set. Seed data first.');",
                   "    }",
                   "}",
                   "pm.test('ok', () => pm.response.to.have.status(200));"
@@ -1598,7 +1758,389 @@
       ]
     },
     {
-      "name": "10 \u00b7 Email Inbox",
+      "name": "10 · Master Data — Branch Master (OBPL)",
+      "description": "Our own branches, mirrored from SAP OBPL. Unlike ship-to/bill-to there is no mapping decision here — SAP owns every business field; only is_active and notes are ours. Under the India localization the branch is the GST registration point that decides CGST/SGST vs IGST on a B1 document.",
+      "item": [
+        {
+          "name": "Sync branches (from SAP)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/master-data/branches/sync",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "master-data",
+                "branches",
+                "sync"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"branches\": [\n    {\n      \"bpl_id\": 1,\n      \"bpl_name\": \"Let's Try Foods — Mumbai\",\n      \"disabled\": \"N\",\n      \"address\": \"Unit 5, Andheri Industrial Estate\",\n      \"street\": \"Andheri West\",\n      \"block\": \"MIDC\",\n      \"city\": \"Mumbai\",\n      \"zip_code\": \"400053\",\n      \"state\": \"Maharashtra\",\n      \"country\": \"India\",\n      \"gstin\": \"27AADCL9999Q1ZY\"\n    },\n    {\n      \"bpl_id\": 2,\n      \"bpl_name\": \"Let's Try Foods — Delhi\",\n      \"disabled\": \"N\",\n      \"address\": \"Plot 22, Okhla Phase II\",\n      \"street\": \"Okhla Industrial Area\",\n      \"block\": \"Phase II\",\n      \"city\": \"New Delhi\",\n      \"zip_code\": \"110020\",\n      \"state\": \"Delhi\",\n      \"country\": \"India\",\n      \"gstin\": \"07AADCL9999Q1ZW\"\n    }\n  ]\n}"
+            },
+            "description": "Keyed on bpl_id. `disabled` is SAP's NVARCHAR Y/N — \"Y\"/\"N\", true/false and 1/0 are all accepted and stored as a boolean.\n\nRun this BEFORE the warehouse sync: a warehouse naming an unknown bpl_id is skipped and reported."
+          }
+        },
+        {
+          "name": "List branches  → sets {{branchId}}",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/master-data/branches?limit=100&offset=0",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "master-data",
+                "branches"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "100",
+                  "disabled": false
+                },
+                {
+                  "key": "offset",
+                  "value": "0",
+                  "disabled": false
+                },
+                {
+                  "key": "is_active",
+                  "value": "true",
+                  "disabled": true
+                },
+                {
+                  "key": "disabled",
+                  "value": "false",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Each row carries warehouse_count, so you can see at a glance which branches have no warehouses yet."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    const b = pm.response.json();",
+                  "    const v = ((b.items || [])[0] || {}).id;",
+                  "    if (v) {",
+                  "        pm.collectionVariables.set('branchId', v);",
+                  "        console.log('branchId = ' + v);",
+                  "    } else {",
+                  "        console.log('No rows — branchId not set. Run \"Sync branches (from SAP)\" first.');",
+                  "    }",
+                  "}",
+                  "pm.test('ok', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Park a branch locally (ops only)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/master-data/branches/{{branchId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "master-data",
+                "branches",
+                "{{branchId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"is_active\": false,\n  \"notes\": \"Closed for stock audit — do not route POs here\"\n}"
+            },
+            "description": "Only is_active and notes are writable. Sending a CHANGED SAP-owned field (bpl_name, disabled, address…) returns 409 rather than being silently dropped; sending it unchanged is fine, so a GET response can be edited and PUT straight back."
+          }
+        },
+        {
+          "name": "NEGATIVE — rename a branch locally (expect 409)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/master-data/branches/{{branchId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "master-data",
+                "branches",
+                "{{branchId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"bpl_name\": \"Renamed In The Dashboard\",\n  \"is_active\": true\n}"
+            },
+            "description": "SAP owns bpl_name. Expect 409 IMMUTABLE_FIELD naming the field, what you sent, and what is stored."
+          }
+        }
+      ]
+    },
+    {
+      "name": "11 · Master Data — Warehouse Master (OWHS)",
+      "description": "Our own warehouses, mirrored from SAP OWHS. Every warehouse belongs to a branch (OWHS.BPLid), and B1 rejects a marketing document whose warehouse and branch disagree — so branches must be synced first and re-parenting is a SAP change, not a dashboard one.",
+      "item": [
+        {
+          "name": "Sync warehouses (from SAP)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/master-data/warehouses/sync",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "master-data",
+                "warehouses",
+                "sync"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"warehouses\": [\n    {\n      \"whs_code\": \"MUM-01\",\n      \"whs_name\": \"Mumbai Main Store\",\n      \"bpl_id\": 1,\n      \"inactive\": \"N\",\n      \"location\": 1,\n      \"street\": \"Andheri West\",\n      \"block\": \"MIDC\",\n      \"city\": \"Mumbai\",\n      \"zip_code\": \"400053\",\n      \"state\": \"Maharashtra\",\n      \"country\": \"India\"\n    },\n    {\n      \"whs_code\": \"MUM-02\",\n      \"whs_name\": \"Mumbai Cold Store\",\n      \"bpl_id\": 1,\n      \"inactive\": \"N\",\n      \"city\": \"Mumbai\",\n      \"zip_code\": \"400053\",\n      \"state\": \"Maharashtra\",\n      \"country\": \"India\"\n    },\n    {\n      \"whs_code\": \"DEL-01\",\n      \"whs_name\": \"Delhi Okhla Store\",\n      \"bpl_id\": 2,\n      \"inactive\": \"N\",\n      \"city\": \"New Delhi\",\n      \"zip_code\": \"110020\",\n      \"state\": \"Delhi\",\n      \"country\": \"India\"\n    }\n  ]\n}"
+            },
+            "description": "Keyed on whs_code (upper-cased on receipt). bpl_id must already exist in Branch Master.\n\nSending the same whs_code with a different bpl_id re-parents the warehouse — that is deliberately the only way to move it."
+          }
+        },
+        {
+          "name": "List warehouses  → sets {{warehouseId}}",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/master-data/warehouses?limit=100&offset=0",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "master-data",
+                "warehouses"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "100",
+                  "disabled": false
+                },
+                {
+                  "key": "offset",
+                  "value": "0",
+                  "disabled": false
+                },
+                {
+                  "key": "bpl_id",
+                  "value": "1",
+                  "disabled": true
+                },
+                {
+                  "key": "is_active",
+                  "value": "true",
+                  "disabled": true
+                },
+                {
+                  "key": "inactive",
+                  "value": "false",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Each row resolves bpl_id and branch_name from the parent branch."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    const b = pm.response.json();",
+                  "    const v = ((b.items || [])[0] || {}).id;",
+                  "    if (v) {",
+                  "        pm.collectionVariables.set('warehouseId', v);",
+                  "        console.log('warehouseId = ' + v);",
+                  "    } else {",
+                  "        console.log('No rows — warehouseId not set. Run \"Sync warehouses (from SAP)\" first.');",
+                  "    }",
+                  "}",
+                  "pm.test('ok', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Park a warehouse locally (ops only)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/master-data/warehouses/{{warehouseId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "master-data",
+                "warehouses",
+                "{{warehouseId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"is_active\": false,\n  \"notes\": \"Dock under repair — ships from MUM-02 until further notice\"\n}"
+            },
+            "description": "Only is_active and notes are writable. Everything else belongs to the sync."
+          }
+        },
+        {
+          "name": "NEGATIVE — warehouse under an unknown branch (expect skipped)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/master-data/warehouses/sync",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "master-data",
+                "warehouses",
+                "sync"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"warehouses\": [\n    {\n      \"whs_code\": \"ORPHAN-1\",\n      \"whs_name\": \"No such branch\",\n      \"bpl_id\": 9999\n    }\n  ]\n}"
+            },
+            "description": "Expect 200 with {\"created\":0,\"skipped\":1} and an error naming BPLId 9999. A 200 with created:1 means the guard is broken — stop and report it."
+          }
+        },
+        {
+          "name": "NEGATIVE — re-parent from the dashboard (expect 409)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/master-data/warehouses/{{warehouseId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "master-data",
+                "warehouses",
+                "{{warehouseId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"bpl_id\": 2,\n  \"is_active\": true\n}"
+            },
+            "description": "Re-parenting must go through SAP + sync. Expect 409 IMMUTABLE_FIELD."
+          }
+        }
+      ]
+    },
+    {
+      "name": "12 · Email Inbox",
       "description": "Gmail-sourced partners (source_channel = EMAIL).",
       "item": [
         {
@@ -1638,7 +2180,7 @@
           }
         },
         {
-          "name": "Messages  \u2192 sets {{messageId}}",
+          "name": "Messages  → sets {{messageId}}",
           "request": {
             "method": "GET",
             "header": [
@@ -1710,7 +2252,7 @@
                   "        pm.collectionVariables.set('messageId', v);",
                   "        console.log('messageId = ' + v);",
                   "    } else {",
-                  "        console.log('No rows \u2014 messageId not set. Seed data first.');",
+                  "        console.log('No rows — messageId not set. Seed data first.');",
                   "    }",
                   "}",
                   "pm.test('ok', () => pm.response.to.have.status(200));"
@@ -1794,7 +2336,7 @@
                 "retry-parse"
               ]
             },
-            "description": "Re-runs the parser on the stored raw payload \u2014 no re-fetch from Gmail."
+            "description": "Re-runs the parser on the stored raw payload — no re-fetch from Gmail."
           }
         },
         {
@@ -1831,7 +2373,7 @@
       ]
     },
     {
-      "name": "11 \u00b7 API Inbox",
+      "name": "13 · API Inbox",
       "description": "API/webhook-sourced partners (Zepto, Blinkit).",
       "item": [
         {
@@ -1894,7 +2436,7 @@
           }
         },
         {
-          "name": "Messages  \u2192 sets {{messageId}}",
+          "name": "Messages  → sets {{messageId}}",
           "request": {
             "method": "GET",
             "header": [
@@ -1965,7 +2507,7 @@
                   "        pm.collectionVariables.set('messageId', v);",
                   "        console.log('messageId = ' + v);",
                   "    } else {",
-                  "        console.log('No rows \u2014 messageId not set. Seed data first.');",
+                  "        console.log('No rows — messageId not set. Seed data first.');",
                   "    }",
                   "}",
                   "pm.test('ok', () => pm.response.to.have.status(200));"
@@ -2051,13 +2593,13 @@
                 }
               ]
             },
-            "description": "Enqueues an immediate poll. Zepto requests a 14-day window and dedupes on eventId, so re-running is safe \u2014 already-seen events are skipped.\n\nOnly works from a whitelisted IP; a dev machine gets HTTP 428."
+            "description": "Enqueues an immediate poll. Zepto requests a 14-day window and dedupes on eventId, so re-running is safe — already-seen events are skipped.\n\nOnly works from a whitelisted IP; a dev machine gets HTTP 428."
           }
         }
       ]
     },
     {
-      "name": "12 \u00b7 Manual Inbox",
+      "name": "14 · Manual Inbox",
       "item": [
         {
           "name": "Partners",
@@ -2098,10 +2640,10 @@
       ]
     },
     {
-      "name": "13 \u00b7 Exceptions",
+      "name": "15 · Exceptions",
       "item": [
         {
-          "name": "List exceptions  \u2192 sets {{issueId}}",
+          "name": "List exceptions  → sets {{issueId}}",
           "request": {
             "method": "GET",
             "header": [
@@ -2162,7 +2704,7 @@
                   "        pm.collectionVariables.set('issueId', v);",
                   "        console.log('issueId = ' + v);",
                   "    } else {",
-                  "        console.log('No rows \u2014 issueId not set. Seed data first.');",
+                  "        console.log('No rows — issueId not set. Seed data first.');",
                   "    }",
                   "}",
                   "pm.test('ok', () => pm.response.to.have.status(200));"
@@ -2206,10 +2748,10 @@
       ]
     },
     {
-      "name": "14 \u00b7 B1 Logs",
+      "name": "16 · B1 Logs",
       "item": [
         {
-          "name": "List B1 calls  \u2192 sets {{b1LogId}}",
+          "name": "List B1 calls  → sets {{b1LogId}}",
           "request": {
             "method": "GET",
             "header": [
@@ -2265,7 +2807,7 @@
                   "        pm.collectionVariables.set('b1LogId', v);",
                   "        console.log('b1LogId = ' + v);",
                   "    } else {",
-                  "        console.log('No rows \u2014 b1LogId not set. Seed data first.');",
+                  "        console.log('No rows — b1LogId not set. Seed data first.');",
                   "    }",
                   "}",
                   "pm.test('ok', () => pm.response.to.have.status(200));"
@@ -2301,11 +2843,11 @@
       ]
     },
     {
-      "name": "15 \u00b7 Webhooks (partner \u2192 us)",
-      "description": "Authenticates with the api-key header ONLY. No login, no Bearer token.",
+      "name": "17 · Webhooks (partner → us)",
+      "description": "Partner-to-us endpoints. Authenticated with the `api-key` header ONLY — no login, no Bearer token. A webhook is a plain HTTP POST; there is no socket or handshake.\n\nThe Blinkit request carries the complete POVMS contract payload and full field documentation — it can be handed to Blinkit's team as the integration spec.",
       "item": [
         {
-          "name": "Blinkit \u2014 push PO (expect 200)",
+          "name": "Blinkit — push PO (passes every validation, SAP-ready)",
           "request": {
             "method": "POST",
             "header": [
@@ -2331,9 +2873,41 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"po_number\": \"TEST-PO-001\",\n  \"type\": \"PO_CREATION\",\n  \"details\": {\n    \"issue_date\": \"2026-08-18\",\n    \"delivery_date\": \"2026-08-22\",\n    \"expiry_date\": \"2026-08-27\",\n    \"outlet_id\": \"12345\",\n    \"total_qty\": 50,\n    \"total_amount\": 5900.0,\n    \"buyer_details\": {\n      \"name\": \"Blinkit Warehouse Bhiwandi\",\n      \"gstin\": \"27AAFCD5862R013\",\n      \"destination_address\": {\n        \"line1\": \"Warehouse 4, Industrial Estate\",\n        \"line2\": \"Bhiwandi\",\n        \"city\": \"Thane\",\n        \"state\": \"Maharashtra\",\n        \"postal_code\": \"421302\"\n      }\n    },\n    \"item_data\": [\n      {\n        \"item_id\": \"100001\",\n        \"sku_code\": \"TESTSKU001\",\n        \"upc\": \"8901234567890\",\n        \"name\": \"Test Product 200g\",\n        \"units_ordered\": 50,\n        \"basic_price\": 100.0,\n        \"mrp\": 140.0,\n        \"hsn_code\": \"20081910\",\n        \"tax_details\": {\n          \"igst_percentage\": null,\n          \"cgst_percentage\": 9.0,\n          \"sgst_percentage\": 9.0\n        }\n      }\n    ]\n  }\n}"
+              "raw": "{\n  \"type\": \"PO_CREATION\",\n  \"po_number\": \"2264110009002\",\n  \"tenant\": \"BLINKIT\",\n  \"details\": {\n    \"po_number\": \"2264110009002\",\n    \"outlet_id\": 12543,\n    \"issue_date\": \"2026-08-19T00:00:00.000Z\",\n    \"expiry_date\": \"2026-09-02T00:00:00.000Z\",\n    \"delivery_date\": \"2026-08-26T00:00:00.000Z\",\n    \"vehicle_details\": {\n      \"license_number\": \"MH-04-AB-1234\"\n    },\n    \"buyer_details\": {\n      \"name\": \"Blink Commerce Private Limited — Bhiwandi DC\",\n      \"gstin\": \"27AAECG1234K1Z5\",\n      \"destination_address\": {\n        \"line1\": \"Warehouse 4, Industrial Estate\",\n        \"line2\": \"Bhiwandi\",\n        \"city\": \"Thane\",\n        \"state\": \"Maharashtra\",\n        \"postal_code\": \"421302\",\n        \"country\": \"India\"\n      },\n      \"registered_address\": {\n        \"line1\": \"Plot 45, MIDC\",\n        \"line2\": \"Andheri East\",\n        \"city\": \"Mumbai\",\n        \"state\": \"Maharashtra\",\n        \"postal_code\": \"400093\",\n        \"country\": \"India\"\n      },\n      \"contact_details\": [\n        {\n          \"name\": \"DC Manager\",\n          \"phone\": \"9876543210\",\n          \"email\": \"wh.manager@blinkit.com\"\n        }\n      ]\n    },\n    \"supplier_details\": {\n      \"id\": \"18309\",\n      \"name\": \"Let's Try Foods Private Limited\",\n      \"gstin\": \"27AADCL9999Q1ZY\",\n      \"pan\": \"AADCL9999Q\",\n      \"shipping_address\": {\n        \"line1\": \"Unit 5, Andheri Industrial Estate\",\n        \"line2\": \"Andheri West\",\n        \"city\": \"Mumbai\",\n        \"state\": \"Maharashtra\",\n        \"postal_code\": \"400053\",\n        \"country\": \"India\"\n      },\n      \"registered_address\": {\n        \"line1\": \"Unit 5, Andheri Industrial Estate\",\n        \"line2\": \"Andheri West\",\n        \"city\": \"Mumbai\",\n        \"state\": \"Maharashtra\",\n        \"postal_code\": \"400053\",\n        \"country\": \"India\"\n      },\n      \"contact_details\": [\n        {\n          \"name\": \"Sales Desk\",\n          \"phone\": \"9123456789\",\n          \"email\": \"tech@letstryfoods.com\"\n        }\n      ]\n    },\n    \"item_data\": [\n      {\n        \"item_id\": 10116317,\n        \"sku_code\": \"10116317\",\n        \"line_number\": 0,\n        \"units_ordered\": 360,\n        \"landing_price\": 71.6,\n        \"basic_price\": 67.05,\n        \"tax_details\": {\n          \"cgst_percentage\": 2.5,\n          \"sgst_percentage\": 2.5,\n          \"igst_percentage\": null,\n          \"cess_percentage\": null,\n          \"additional_cess_value\": null\n        },\n        \"crates_config\": {\n          \"crates_ordered\": 10,\n          \"crate_size\": 36\n        },\n        \"name\": \"Let's Try Pudina Makhana 57g\",\n        \"mrp\": 160,\n        \"upc\": \"8901774002349\",\n        \"uom\": {\n          \"unit\": \"g\",\n          \"value\": 57\n        }\n      },\n      {\n        \"item_id\": 10116320,\n        \"sku_code\": \"10116320\",\n        \"line_number\": 1,\n        \"units_ordered\": 240,\n        \"landing_price\": 67.2,\n        \"basic_price\": 62.86,\n        \"tax_details\": {\n          \"cgst_percentage\": 2.5,\n          \"sgst_percentage\": 2.5,\n          \"igst_percentage\": null,\n          \"cess_percentage\": null,\n          \"additional_cess_value\": null\n        },\n        \"crates_config\": {\n          \"crates_ordered\": 8,\n          \"crate_size\": 30\n        },\n        \"name\": \"Let's Try Khatta Metha 173g\",\n        \"mrp\": 120,\n        \"upc\": \"8901774002356\",\n        \"uom\": {\n          \"unit\": \"g\",\n          \"value\": 173\n        }\n      },\n      {\n        \"item_id\": 10117527,\n        \"sku_code\": \"10117527\",\n        \"line_number\": 2,\n        \"units_ordered\": 180,\n        \"landing_price\": 26.19,\n        \"basic_price\": 23.8,\n        \"tax_details\": {\n          \"cgst_percentage\": 2.5,\n          \"sgst_percentage\": 2.5,\n          \"igst_percentage\": null,\n          \"cess_percentage\": null,\n          \"additional_cess_value\": null\n        },\n        \"crates_config\": {\n          \"crates_ordered\": 5,\n          \"crate_size\": 36\n        },\n        \"name\": \"Let's Try Potato Wafer 52g\",\n        \"mrp\": 60,\n        \"upc\": \"8901774002363\",\n        \"uom\": {\n          \"unit\": \"g\",\n          \"value\": 52\n        }\n      }\n    ],\n    \"total_sku\": 3,\n    \"total_qty\": 780,\n    \"total_amount\": 45683.82,\n    \"custom_attributes\": [\n      {\n        \"name\": \"purchase_type\",\n        \"value\": \"REGULAR\"\n      },\n      {\n        \"name\": \"buyer_reference\",\n        \"value\": \"REQ-2026-08-19-9002\"\n      }\n    ]\n  }\n}"
             },
-            "description": "This is exactly what Blinkit's server sends \u2014 a webhook IS just a POST.\n\nPartner code in the path must be uppercase and match trading_partners.code.\n  wrong key   \u2192 401\n  unknown code \u2192 404\n\nThe response body IS the acknowledgement: Blinkit reads data.po_status."
+            "description": "End-to-end test payload. Lands as **VALIDATED with zero issues**, which the other Blinkit sample does not — it is built to satisfy every rule:\n\n- `sku_code` values are real BLINKIT mappings (→ FG00310 / FG00233 / FG00322), so E002_SKU_UNRESOLVED cannot fire.\n- Quantities are whole cases (36×10, 30×8, 36×5), so E008_CASE_SIZE_MISMATCH cannot fire.\n- `basic_price` sits on the contracted price, so W004_PRICE_VARIANCE stays quiet.\n- `outlet_id` 12543 has a ship-to mapping → FG_MH, so W003_SHIP_TO_UNMAPPED cannot fire.\n- CGST 2.5 = SGST 2.5 with IGST null (Maharashtra → Maharashtra), so the tax rules pass.\n- `total_amount` equals the sum of the line totals to the paisa, so W006_TOTAL_MISMATCH cannot fire. Each line's taxable value is a multiple of 0.40, which makes 2.5% land exactly on two decimals — otherwise our per-line tax and B1's total-level tax differ by a paisa.\n\nChange `po_number` before re-sending: the same number is de-duplicated rather than creating a second PO.\n\nThen push it: **Purchase Orders → Push to SAP with branch + warehouse** (bpl_id 5, whs_code FG_MH). Verified live → Sales Order 3000046 / DocEntry 1771."
+          }
+        },
+        {
+          "name": "Blinkit — push PO (full contract payload)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "api-key",
+                "value": "{{webhookApiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/webhooks/BLINKIT",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "webhooks",
+                "BLINKIT"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"PO_CREATION\",\n  \"po_number\": \"2264110001440\",\n  \"tenant\": \"BLINKIT\",\n  \"details\": {\n    \"po_number\": \"2264110001440\",\n    \"outlet_id\": 12543,\n    \"issue_date\": \"2026-08-19T00:00:00.000Z\",\n    \"expiry_date\": \"2026-08-26T00:00:00.000Z\",\n    \"delivery_date\": \"2026-08-24T00:00:00.000Z\",\n    \"vehicle_details\": {\n      \"license_number\": \"DL-311/431\"\n    },\n    \"buyer_details\": {\n      \"name\": \"Blinkit Warehouse Bhiwandi\",\n      \"gstin\": \"27ABCDE1234F1Z5\",\n      \"destination_address\": {\n        \"line1\": \"Warehouse 4, Industrial Estate\",\n        \"line2\": \"Bhiwandi\",\n        \"city\": \"Thane\",\n        \"state\": \"Maharashtra\",\n        \"postal_code\": \"421302\",\n        \"country\": \"India\"\n      },\n      \"registered_address\": {\n        \"line1\": \"Plot 45, MIDC\",\n        \"line2\": \"Andheri East\",\n        \"city\": \"Mumbai\",\n        \"state\": \"Maharashtra\",\n        \"postal_code\": \"400093\",\n        \"country\": \"India\"\n      },\n      \"contact_details\": [\n        {\n          \"name\": \"Warehouse Manager\",\n          \"phone\": \"9876543210\",\n          \"email\": \"wh.manager@blinkit.com\"\n        }\n      ]\n    },\n    \"supplier_details\": {\n      \"id\": \"18309\",\n      \"name\": \"Let's Try Foods Private Limited\",\n      \"gstin\": \"27AADCL9999Q1ZY\",\n      \"pan\": \"AADCL9999Q\",\n      \"shipping_address\": {\n        \"line1\": \"Unit 5, Andheri Industrial Estate\",\n        \"line2\": \"Andheri West\",\n        \"city\": \"Mumbai\",\n        \"state\": \"Maharashtra\",\n        \"postal_code\": \"400053\",\n        \"country\": \"India\"\n      },\n      \"registered_address\": {\n        \"line1\": \"Unit 5, Andheri Industrial Estate\",\n        \"line2\": \"Andheri West\",\n        \"city\": \"Mumbai\",\n        \"state\": \"Maharashtra\",\n        \"postal_code\": \"400053\",\n        \"country\": \"India\"\n      },\n      \"contact_details\": [\n        {\n          \"name\": \"Sales Desk\",\n          \"phone\": \"9123456789\",\n          \"email\": \"tech@letstryfoods.com\"\n        }\n      ]\n    },\n    \"item_data\": [\n      {\n        \"item_id\": 10016623,\n        \"sku_code\": \"LTF-MAK-057\",\n        \"line_number\": 0,\n        \"units_ordered\": 240,\n        \"landing_price\": 32.56,\n        \"basic_price\": 31.01,\n        \"tax_details\": {\n          \"cgst_percentage\": 2.5,\n          \"sgst_percentage\": 2.5,\n          \"igst_percentage\": null,\n          \"cess_percentage\": null,\n          \"additional_cess_value\": null\n        },\n        \"crates_config\": {\n          \"crates_ordered\": 14,\n          \"crate_size\": 10\n        },\n        \"name\": \"Let's Try Pudina Makhana 57g\",\n        \"mrp\": 42,\n        \"upc\": \"8901774002349\",\n        \"uom\": {\n          \"unit\": \"g\",\n          \"value\": 57\n        }\n      },\n      {\n        \"item_id\": 10016624,\n        \"sku_code\": \"LTF-ALM-200\",\n        \"line_number\": 1,\n        \"units_ordered\": 120,\n        \"landing_price\": 55.1,\n        \"basic_price\": 52.5,\n        \"tax_details\": {\n          \"cgst_percentage\": 2.5,\n          \"sgst_percentage\": 2.5,\n          \"igst_percentage\": null,\n          \"cess_percentage\": null,\n          \"additional_cess_value\": null\n        },\n        \"crates_config\": {\n          \"crates_ordered\": 10,\n          \"crate_size\": 12\n        },\n        \"name\": \"Let's Try Roasted Almonds 200g\",\n        \"mrp\": 349,\n        \"upc\": \"8901774002356\",\n        \"uom\": {\n          \"unit\": \"g\",\n          \"value\": 200\n        }\n      }\n    ],\n    \"total_sku\": 2,\n    \"total_qty\": 360,\n    \"total_amount\": 14429.52,\n    \"custom_attributes\": [\n      {\n        \"name\": \"purchase_type\",\n        \"value\": \"REGULAR\"\n      },\n      {\n        \"name\": \"buyer_reference\",\n        \"value\": \"REQ-2026-08-19-001\"\n      }\n    ]\n  }\n}"
+            },
+            "description": "# Blinkit → Let's Try Foods · Purchase Order Creation\n\nPush a PO to us. Implements Blinkit's **POVMS - Purchase Order Creation API Contracts**\n(v 2026-02-10). Section numbers below (3.6.x) refer to that document.\n\nThe body on this request is a **complete, working example** — every field in the contract\nis present and the figures reconcile, so it can be sent as-is to verify connectivity.\n\n---\n\n## Endpoint\n\n```\nPOST {{baseUrl}}/api/webhooks/BLINKIT\nContent-Type: application/json\napi-key: <the key we share with you separately>\n```\n\nThe partner code in the path must be exactly `BLINKIT`, uppercase.\nA **webhook is a plain POST** — there is no socket or handshake.\n\n| Status | Meaning |\n|---|---|\n| `200` | Accepted. The body is the acknowledgement — read `data.po_status` |\n| `401` | `api-key` header missing or does not match |\n| `404` | Partner code in the URL is wrong |\n| `422` | Payload shape invalid — `details[]` names the exact field |\n\n---\n\n## Top level\n\n| # | Field | Type | Required | Notes |\n|---|---|---|---|---|\n| 1 | `type` | string | **yes** | Enum: `PO_CREATION`, `PO_CANCELLATION` |\n| 2 | `po_number` | string | **yes** | Must equal `details.po_number` (3.1) |\n| 4 | `tenant` | string | **yes** | Enum: `BLINKIT`, `HYPERPURE` |\n| 3 | `details` | object | **yes** | Full PO metadata |\n\n> **`tenant` matters.** `HYPERPURE` is a different legal buyer with its own GSTIN, so it\n> maps to a different customer account on our side. Sending the wrong value invoices the\n> wrong entity.\n\n## details\n\n| # | Field | Type | Required | Notes |\n|---|---|---|---|---|\n| 3.1 | `po_number` | string | **yes** | Must match the top-level value |\n| — | `outlet_id` | integer | **yes** | Your DC / outlet identifier |\n| — | `issue_date` | string | **yes** | ISO-8601 UTC |\n| 3.2 | `expiry_date` | string | no | ISO-8601 UTC |\n| 3.3 | `delivery_date` | string | no | ISO-8601 UTC |\n| 3.5 | `vehicle_details.license_number` | string | no | Receiving vehicle |\n| 3.7 | `total_sku` | integer | **yes** | Must equal `item_data` length |\n| 3.8 | `total_qty` | integer | **yes** | Must equal the sum of `units_ordered` |\n| 3.9 | `total_amount` | number | **yes** | Must equal the sum of line values |\n| 3.10 | `custom_attributes[]` | array | no | Free-form `{name, value}` metadata |\n\n> We compare `total_sku`, `total_qty` and `total_amount` against the lines we parse. A\n> mismatch does not reject the PO, but it is flagged for manual review before invoicing\n> and will slow the order down.\n\n## details.buyer_details (3.4)\n\n| # | Field | Type | Required |\n|---|---|---|---|\n| 3.4.1 | `name` | string | no |\n| 3.4.2 | `gstin` | string | **yes** |\n| 3.4.3 | `destination_address` | object | **yes** |\n| 3.4.5 | `registered_address` | object | **yes** |\n| 3.4.6 | `contact_details[]` | array | **yes** — `{name, phone, email}` |\n\nAddress objects carry `line1`, `line2`, `city`, `state`, `postal_code`, `country`.\n`postal_code` is required (3.4.4.5); the rest are optional.\n\n> **Send `state`.** Indian GST requires CGST+SGST for an intra-state movement and IGST\n> for inter-state. We determine which by comparing your delivery state against ours.\n\n## details.supplier_details (3.5)\n\n`id`, `name`, `gstin`, `pan`, `shipping_address`, `registered_address` are required;\n`contact_details[]` is optional.\n\n## details.item_data[] (3.6)\n\n| # | Field | Type | Required | Notes |\n|---|---|---|---|---|\n| 3.6.1 | `item_id` | integer | **yes** | Your internal item ID |\n| 3.6.2 | `sku_code` | string | no | **Optional but strongly preferred** — see below |\n| 3.6.3 | `line_number` | integer | **yes** | Zero-based is accepted |\n| 3.6.4 | `units_ordered` | integer | **yes** | Must be > 0 |\n| 3.6.5 | `landing_price` | number | **yes** | Incl. logistics and taxes |\n| 3.6.6 | `basic_price` | number | **yes** | **Pre-tax cost price — we bill on this** |\n| 3.6.7 | `tax_details` | object | no | See below |\n| 3.6.8 | `name` | string | **yes** | Item name |\n| 3.6.9 | `mrp` | number | **yes** | Maximum Retail Price |\n| 3.6.10 | `upc` | string | **yes** | GTIN / UPC |\n| 3.6.11 | `uom` | object | **yes** | `{unit, value}` — e.g. `{\"unit\":\"g\",\"value\":57}` |\n| 3.6.12 | `crates_config` | object | no | `{crates_ordered, crate_size}` |\n\n> **`sku_code` — please always send it.** It is the field we map to our item master. It\n> is optional in the contract, and when it is empty we fall back to `item_id`, but that\n> requires a separate mapping on our side and delays the order. Sending `sku_code`\n> avoids the problem entirely.\n\n> **`basic_price` vs `landing_price`.** We compute the taxable value from `basic_price`\n> because `landing_price` already includes tax — using it would double-count.\n\n### tax_details (3.6.7)\n\n| # | Field | Type | Notes |\n|---|---|---|---|\n| 3.6.7.1 | `cgst_percentage` | number | Intra-state |\n| 3.6.7.2 | `sgst_percentage` | number | Intra-state |\n| 3.6.7.3 | `igst_percentage` | number | Inter-state — `null` when intra-state |\n| 3.6.7.4 | `cess_percentage` | number | A **percentage** |\n| 3.6.7.5 | `additional_cess_value` | number | A **flat amount**, not a percentage |\n\nCGST+SGST and IGST are mutually exclusive. Send `null` for the ones that do not apply —\nthe example uses CGST+SGST with `igst_percentage: null`.\n\n---\n\n## Response\n\n```json\n{\n  \"success\": true,\n  \"message\": \"PO received\",\n  \"timestamp\": \"2026-08-19T13:07:06Z\",\n  \"data\": {\n    \"po_status\": \"processing\",\n    \"po_number\": \"2264110001440\",\n    \"errors\": [],\n    \"warnings\": []\n  }\n}\n```\n\n`data.po_status` enum: `processing` · `accepted` · `partially_accepted` · `rejected`.\n\nWe return `processing` immediately — the PO is stored and queued. The final outcome\nfollows on the acknowledgement flow.\n\n| Code | Meaning |\n|---|---|\n| `E101` | Duplicate PO number |\n| `E102` | Outlet not found |\n| `E103` | Supplier GST mismatch |\n| `E104` | Buyer GST mismatch |\n| `E105` | SKU-level error (MRP missing, qty over max) |\n| `W101` | UOM mismatch — created with the default UOM |\n\n**Retries are safe.** We de-duplicate on `po_number`, so re-sending the same PO updates\nrather than duplicating it.\n"
           },
           "event": [
             {
@@ -2343,10 +2917,10 @@
                 "exec": [
                   "pm.test('accepted', () => pm.response.to.have.status(200));",
                   "if (pm.response.code === 401) {",
-                  "    console.log('401 \u2192 {{webhookApiKey}} does not match trading_partners.webhook_secret.');",
+                  "    console.log('401 → {{webhookApiKey}} does not match trading_partners.webhook_secret.');",
                   "}",
                   "if (pm.response.code === 404) {",
-                  "    console.log('404 \u2192 partner code in the URL does not exist.');",
+                  "    console.log('404 → partner code in the URL does not exist.');",
                   "}"
                 ]
               }
@@ -2354,7 +2928,7 @@
           ]
         },
         {
-          "name": "Blinkit \u2014 wrong key (expect 401)",
+          "name": "Blinkit — wrong key (expect 401)",
           "request": {
             "method": "POST",
             "header": [

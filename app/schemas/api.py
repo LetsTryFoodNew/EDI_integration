@@ -158,6 +158,11 @@ class PODetail(BaseModel):
     raw_message_id: uuid.UUID | None
     created_at: datetime
     updated_at: datetime
+    # Set only when a newer version of this PO exists. A SUPERSEDED PO is history —
+    # every action is correctly disabled on it — but without a pointer to the live
+    # version the page looks broken rather than archived.
+    current_version_id: uuid.UUID | None = None
+    current_version: int | None = None
     lines: list[POLineItemResponse]
     validation_issues: list[ValidationIssueResponse]
     b1_push_history: list[B1PushHistoryItem]
@@ -816,6 +821,187 @@ class BillToMappingSyncRequest(BaseModel):
     mappings: list[BillToMappingSyncItem] = Field(min_length=1, max_length=2000)
 
 
+# ── Branch Master (SAP OBPL) ──────────────────────────────────────────────────
+# Our own org structure, not a retailer's. There is no mapping decision to make here:
+# SAP authors every business field, so `is_active` (ours) is the only writable one.
+# A B1 Sales Order line carries both WhsCode and BPLId, and under the India
+# localization the branch is the GST registration point that decides CGST/SGST vs IGST.
+
+class BranchMasterResponse(BaseModel):
+    id: uuid.UUID
+    bpl_id: int
+    bpl_name: str
+    disabled: bool
+    address: str | None
+    street: str | None
+    block: str | None
+    city: str | None
+    zip_code: str | None
+    state: str | None
+    country: str | None
+    gstin: str | None
+    is_active: bool
+    notes: str | None
+    warehouse_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class BranchMasterUpdate(BaseModel):
+    """
+    Ops edit of one branch. Only `is_active` and `notes` are writable — every business
+    field is owned by `POST /branches/sync`. The SAP-owned fields are accepted so a
+    GET -> edit -> PUT round-trip works, but *changing* one is rejected rather than
+    silently dropped.
+    """
+    id: uuid.UUID | None = None
+    bpl_id: int | None = None
+    # Sync-owned; accepted for round-trip, not writable here.
+    bpl_name: str | None = None
+    disabled: bool | None = None
+    address: str | None = None
+    street: str | None = None
+    block: str | None = None
+    city: str | None = None
+    zip_code: str | None = None
+    state: str | None = None
+    country: str | None = None
+    gstin: str | None = None
+    warehouse_count: int | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+    is_active: bool | None = None
+    notes: str | None = None
+
+    model_config = {"extra": "forbid"}
+
+
+class BranchMasterSyncItem(BaseModel):
+    """
+    One SAP B1 OBPL (branch / business place) record.
+
+    `disabled` is SAP's NVARCHAR Y/N flag — send `"Y"`/`"N"`, `true`/`false`, or `1`/`0`;
+    all three are accepted and stored as a boolean.
+    """
+    # ── Accepted for GET -> sync round-trips; ignored, never written ──────────
+    id: uuid.UUID | None = None
+    is_active: bool | None = None        # ops-owned — set via PUT /branches/{id}
+    notes: str | None = None             # ops-owned
+    warehouse_count: int | None = None   # derived
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+    bpl_id: int = Field(ge=1)
+    bpl_name: str = Field(min_length=1, max_length=255)
+    disabled: bool = False
+    address: str | None = None
+    street: str | None = None
+    block: str | None = None
+    city: str | None = None
+    zip_code: str | None = None
+    state: str | None = None
+    country: str | None = None
+    gstin: str | None = None
+
+    model_config = {"extra": "forbid"}
+
+
+class BranchMasterSyncRequest(BaseModel):
+    branches: list[BranchMasterSyncItem] = Field(min_length=1, max_length=2000)
+
+
+# ── Warehouse Master (SAP OWHS) ───────────────────────────────────────────────
+
+class WarehouseMasterResponse(BaseModel):
+    id: uuid.UUID
+    whs_code: str
+    whs_name: str
+    bpl_id: int            # joined from branch_master — the SAP-facing branch key
+    branch_name: str | None
+    inactive: bool
+    location: int | None
+    street: str | None
+    block: str | None
+    city: str | None
+    zip_code: str | None
+    state: str | None
+    country: str | None
+    is_active: bool
+    notes: str | None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class WarehouseMasterUpdate(BaseModel):
+    """
+    Ops edit of one warehouse. Only `is_active` and `notes` are writable — everything
+    else, including the branch link, is owned by `POST /warehouses/sync`. Re-parenting
+    a warehouse to a different branch is a SAP change, not a local one: B1 rejects a
+    document whose warehouse and branch disagree.
+    """
+    id: uuid.UUID | None = None
+    whs_code: str | None = None
+    # Sync-owned; accepted for round-trip, not writable here.
+    whs_name: str | None = None
+    bpl_id: int | None = None
+    branch_name: str | None = None
+    inactive: bool | None = None
+    location: int | None = None
+    street: str | None = None
+    block: str | None = None
+    city: str | None = None
+    zip_code: str | None = None
+    state: str | None = None
+    country: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+    is_active: bool | None = None
+    notes: str | None = None
+
+    model_config = {"extra": "forbid"}
+
+
+class WarehouseMasterSyncItem(BaseModel):
+    """
+    One SAP B1 OWHS (warehouse) record.
+
+    `bpl_id` must already exist in branch_master — push branches before warehouses.
+    `inactive` is SAP's NVARCHAR Y/N flag; `"Y"`/`"N"`, `true`/`false` and `1`/`0` are
+    all accepted.
+    """
+    # ── Accepted for GET -> sync round-trips; ignored, never written ──────────
+    id: uuid.UUID | None = None
+    branch_name: str | None = None       # derived from the branch
+    is_active: bool | None = None        # ops-owned — set via PUT /warehouses/{id}
+    notes: str | None = None             # ops-owned
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+    whs_code: str = Field(min_length=1, max_length=20)
+    whs_name: str = Field(min_length=1, max_length=255)
+    bpl_id: int = Field(ge=1)
+    inactive: bool = False
+    location: int | None = None
+    street: str | None = None
+    block: str | None = None
+    city: str | None = None
+    zip_code: str | None = None
+    state: str | None = None
+    country: str | None = None
+
+    model_config = {"extra": "forbid"}
+
+
+class WarehouseMasterSyncRequest(BaseModel):
+    warehouses: list[WarehouseMasterSyncItem] = Field(min_length=1, max_length=2000)
+
+
 class CustomerBillToItem(BaseModel):
     """Bill_to_mapping row as shown under its parent customer."""
     id: uuid.UUID
@@ -1138,3 +1324,77 @@ class InvoiceResponse(BaseModel):
     line_items: list[InvoiceLineItemResponse] = []
 
     model_config = {"from_attributes": True}
+
+
+# ── SAP push: branch / warehouse selection ────────────────────────────────────
+# A B1 Sales Order needs routing our canonical PO does not carry. The branch is the
+# from-state for place of supply, so it decides CGST+SGST vs IGST, and the warehouse
+# must belong to it or B1 rejects the document. Both are chosen by the operator.
+
+class B1AddressOption(BaseModel):
+    """One BP address on the customer in B1 — a candidate ShipToCode / PayToCode."""
+    address_name: str
+    address_type: str                    # bo_ShipTo | bo_BillTo
+    city: str | None = None
+    state: str | None = None
+    zip_code: str | None = None
+    gstin: str | None = None
+    # True when this address's PIN or state matches what the retailer put on the PO.
+    matches_po: bool = False
+
+
+class WarehouseOption(BaseModel):
+    whs_code: str
+    whs_name: str
+    bpl_id: int
+
+
+class BranchOption(BaseModel):
+    bpl_id: int
+    bpl_name: str
+    state: str | None = None
+    gstin: str | None = None
+    warehouses: list[WarehouseOption] = []
+
+
+class DispatchOptionsResponse(BaseModel):
+    """
+    Everything the push dialog needs: what may be chosen, what is already chosen, and
+    what the tax outcome would be. `interstate` is precomputed per branch so the
+    operator sees the consequence of the choice rather than discovering it on the
+    posted document.
+    """
+    po_id: uuid.UUID
+    buyer_po_number: str
+    partner_code: str
+    b1_card_code: str | None
+    ship_to_state: str | None            # resolved from the PO (GSTIN first)
+    ship_to_pincode: str | None
+    branches: list[BranchOption] = []
+    addresses: list[B1AddressOption] = []
+    address_lookup_error: str | None = None   # B1 unreachable — selection still works
+    # Current selection, from a previous attempt or a saved default.
+    selected_bpl_id: int | None = None
+    selected_whs_code: str | None = None
+    selected_ship_to_code: str | None = None
+    selected_pay_to_code: str | None = None
+    # bpl_id -> "CSGST" | "IGST", so the UI can label each branch with its tax effect.
+    tax_by_branch: dict[str, str] = {}
+
+
+class SapPushRequest(BaseModel):
+    """Operator's selection. bpl_id and whs_code are required — never guessed."""
+    bpl_id: int = Field(ge=1)
+    whs_code: str = Field(min_length=1, max_length=20)
+    ship_to_code: str | None = Field(default=None, max_length=100)
+    pay_to_code: str | None = Field(default=None, max_length=100)
+
+    model_config = {"extra": "forbid"}
+
+
+class SapPreviewResponse(BaseModel):
+    """The exact JSON that would be POSTed to /Orders, plus anything worth a second look."""
+    po_id: uuid.UUID
+    endpoint: str
+    payload: dict[str, Any]
+    warnings: list[str] = []
