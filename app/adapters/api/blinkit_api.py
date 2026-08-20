@@ -23,6 +23,7 @@ from typing import Any
 import httpx
 import structlog
 
+from app.adapters.outbound.blinkit_asn import interpret_asn_response
 from app.config import get_settings
 
 log = structlog.get_logger(__name__)
@@ -163,13 +164,43 @@ class BlinkitApiAdapter:
 
                 resp.raise_for_status()
                 data = resp.json()
-                asn_id = (
-                    data.get("asn_id")
-                    or data.get("data", {}).get("asn_id")
-                    or data.get("id")
+
+                # A 2xx says the request was processed, not that the ASN was accepted.
+                # The contract is explicit that full acceptance, partial acceptance and
+                # rejection all return 2xx, and its own example pairs
+                # "successful": true with "asn_sync_status": "REJECTED". Reading the
+                # status line alone would mark a rejected ASN as delivered, and the
+                # first anyone would hear of it is a truck turned away at the DC.
+                ack = interpret_asn_response(data)
+                if ack.accepted:
+                    log.info(
+                        "blinkit.asn.accepted",
+                        po_number=payload.get("po_number"),
+                        invoice_number=payload.get("invoice_number"),
+                        asn_id=ack.asn_id,
+                        status=ack.status,
+                        warnings=len(ack.warnings),
+                    )
+                    return {
+                        "success": True, "status_code": resp.status_code,
+                        "data": data, "asn_id": ack.asn_id, "ack": ack,
+                    }
+
+                log.error(
+                    "blinkit.asn.rejected",
+                    po_number=payload.get("po_number"),
+                    invoice_number=payload.get("invoice_number"),
+                    status=ack.status,
+                    http_status=resp.status_code,
+                    asn_errors=[e.get("code") for e in ack.asn_errors],
+                    item_errors=[e.get("code") for e in ack.item_errors],
                 )
-                log.info("blinkit.asn.sent", po_number=payload.get("po_number"), asn_id=asn_id)
-                return {"success": True, "status_code": resp.status_code, "data": data, "asn_id": asn_id}
+                # Not retried: a rejection is a decision about the content, so resending
+                # the identical body would be rejected identically.
+                return {
+                    "success": False, "status_code": resp.status_code,
+                    "data": data, "ack": ack, "error": ack.summary,
+                }
 
             except httpx.HTTPStatusError as exc:
                 log.error(

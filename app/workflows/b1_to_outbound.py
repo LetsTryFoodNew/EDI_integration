@@ -466,54 +466,39 @@ def _build_blinkit_asn(
     seller: Any,
 ) -> dict[str, Any]:
     """
-    Build Blinkit ASN JSON payload.
-    Re-implemented from _archive/backend_old/app/services/blinkit.py create_asn docstring.
+    Blinkit ASN from a B1 delivery.
+
+    Delegates to the contract-aligned builder in app/adapters/outbound/blinkit_asn.py so
+    the delivery-driven path and the invoice-driven path cannot drift into sending two
+    different shapes to the same endpoint.
+
+    The version that used to live here predated the contract and guessed: it sent the
+    ASN number as `invoice_number`, derived `mrp` as `unit_price * 1.18`, used
+    `delivery_type: "MTO"` (not one of the contract's COURIER/SELF), and named the tax
+    keys `cgst`/`sgst`/`igst` rather than `*_percentage`.
+
+    This path needs an invoice to build against — the contract is invoice-shaped
+    (invoice_number, invoice_date and per-line tax are all mandatory). When the delivery
+    has no invoice yet, there is nothing honest to send, so it raises rather than
+    inventing an invoice number.
     """
-    today = datetime.now(UTC).strftime("%Y-%m-%d")
-    delivery_lines: list[dict[str, Any]] = delivery.get("DocumentLines") or []
-    shipped_qty_map: dict[str, float] = {
-        str(dl.get("ItemCode", "")): float(dl.get("Quantity", 0))
-        for dl in delivery_lines
-    }
+    from app.adapters.outbound.blinkit_asn import build_blinkit_asn_payload
+    from app.db import SyncSessionLocal
 
-    items: list[dict[str, Any]] = []
-    for line in lines:
-        shipped = shipped_qty_map.get(line.sap_material_no or "", float(line.ordered_qty or 0))
-        cgst = float(line.cgst_rate or 0)
-        sgst = float(line.sgst_rate or 0)
-        igst = float(line.igst_rate or 0)
-        items.append({
-            "item_id": _blinkit_item_id(line, po),
-            "sku_code": line.buyer_sku,
-            "batch_number": "",
-            "sku_description": line.buyer_sku_description or line.buyer_sku,
-            "upc": "",
-            "quantity": round(shipped, 4),
-            "mrp": round(float(line.unit_price or 0) * 1.18, 2),  # estimate; ops should update
-            "unit_basic_price": round(float(line.unit_price or 0), 6),
-            "unit_landing_price": round(float(line.unit_price or 0), 6),
-            "expiry_date": today,
-            "uom": line.buyer_uom or "PC",
-            "tax_distribution": {"cgst": cgst, "sgst": sgst, "igst": igst},
-        })
+    invoice = next(iter(asn.invoices or []), None)
+    if invoice is None:
+        raise ValueError(
+            f"Blinkit ASN for PO {po.buyer_po_number} has no invoice attached. "
+            f"Blinkit's ASN Sync contract is invoice-shaped (invoice_number, "
+            f"invoice_date and per-line tax are mandatory), so the ASN is raised when "
+            f"SAP pushes the A/R Invoice, not from the delivery alone."
+        )
 
-    seller_name = getattr(seller, "name", "Let's Try Foods") if seller else "Let's Try Foods"
-    seller_gstin = getattr(seller, "gstin", "") if seller else ""
-
-    return {
-        "po_number": po.buyer_po_number,
-        "invoice_number": asn.asn_number,
-        "invoice_date": today,
-        "delivery_date": str(asn.shipment_date) if asn.shipment_date else today,
-        "supplier_details": {
-            "name": seller_name,
-            "gstin": seller_gstin,
-            "supplier_address": {},
-        },
-        "buyer_details": {"gstin": po.buyer_gstin or ""},
-        "shipment_details": {"delivery_type": "MTO"},
-        "items": items,
-    }
+    with SyncSessionLocal() as session:
+        payload, warnings = build_blinkit_asn_payload(session, po, asn, invoice, partner, seller)
+    for w in warnings:
+        log.warning("asn.blinkit.payload_warning", po=po.buyer_po_number, warning=w)
+    return payload
 
 
 def _build_zepto_asn(

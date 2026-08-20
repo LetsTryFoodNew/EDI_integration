@@ -320,26 +320,136 @@ class TestBlinkitApiAdapter:
         assert result["success"] is False
         assert call_count == 1  # no retry on 4xx
 
-    def test_send_asn_success(self) -> None:
-        import respx
+    def test_send_asn_accepted(self) -> None:
+        """Contract response shape is `successful` + `asn_sync_status`, not `success`."""
         import httpx
+        import respx
 
         with respx.mock:
-            respx.post(self._asn_url()).mock(
-                return_value=httpx.Response(200, json={"asn_id": "ASN-BL-9999", "success": True})
-            )
+            respx.post(self._asn_url()).mock(return_value=httpx.Response(200, json={
+                "successful": True,
+                "success_count": 3,
+                "error_count": 0,
+                "asn_sync_status": "ACCEPTED",
+                "invoice_number": "INV-001",
+                "po_number": "BL-001",
+                "asn_id": "Blinkit_12345123123",
+                "message": "ASN accepted.",
+            }))
             result = self.adapter.send_asn({"po_number": "BL-001"})
 
         assert result["success"] is True
-        assert result["asn_id"] == "ASN-BL-9999"
+        assert result["asn_id"] == "Blinkit_12345123123"
+        assert result["ack"].accepted is True
+
+    def test_send_asn_rejected_despite_http_200(self) -> None:
+        """
+        The contract returns 2xx for rejections too, and its own example pairs
+        `"successful": true` with `"asn_sync_status": "REJECTED"` — `successful` means
+        "the request was processed", not "the ASN was accepted". Reporting this as a
+        successful send would leave a rejected ASN looking delivered until a truck was
+        turned away at the DC.
+        """
+        import httpx
+        import respx
+
+        with respx.mock:
+            respx.post(self._asn_url()).mock(return_value=httpx.Response(200, json={
+                "successful": True,
+                "success_count": 10,
+                "error_count": 2,
+                "asn_sync_status": "REJECTED",
+                "invoice_number": "abcd12435",
+                "po_number": "PO_123",
+                "asn_id": "Blinkit_12345123123",
+                "message": "ASN accepted partially. Some items were rejected.",
+                "data": {"errors": [
+                    {"code": "E108", "level": "asn",
+                     "message": "Invoice date cannot be less than purchase order issue date",
+                     "error_params": {"po_number": "PO_123", "invoice_number": "abcd12435"}},
+                    {"code": "E112", "level": "item", "message": "Item IDs are incorrect",
+                     "error_params": {"item_ids": ["10016620", "10016621"]}},
+                ]},
+            }))
+            result = self.adapter.send_asn({"po_number": "PO_123"})
+
+        assert result["success"] is False
+        ack = result["ack"]
+        assert ack.accepted is False
+        assert ack.status == "REJECTED"
+        assert [e["code"] for e in ack.asn_errors] == ["E108"]
+        assert [e["code"] for e in ack.item_errors] == ["E112"]
+        assert "E108" in result["error"]
+
+    def test_send_asn_one_asn_level_error_rejects_the_whole_submission(self) -> None:
+        """
+        "If there is even a single error with level = 'asn', the request will be
+        considered rejected" — so the status field alone is not the authority.
+        """
+        import httpx
+        import respx
+
+        with respx.mock:
+            respx.post(self._asn_url()).mock(return_value=httpx.Response(200, json={
+                "successful": True,
+                "asn_sync_status": "ACCEPTED",
+                "data": {"errors": [
+                    {"code": "E109", "level": "asn", "message": "Supplier GSTIN mismatch"},
+                ]},
+            }))
+            result = self.adapter.send_asn({})
+
+        assert result["success"] is False
+        assert result["ack"].accepted is False
+
+    def test_send_asn_partial_acceptance_counts_as_sent(self) -> None:
+        """Item-level errors alone do not reject the ASN — the shipment still goes."""
+        import httpx
+        import respx
+
+        with respx.mock:
+            respx.post(self._asn_url()).mock(return_value=httpx.Response(200, json={
+                "successful": True,
+                "asn_sync_status": "PARTIALLY_ACCEPTED",
+                "asn_id": "Blinkit_777",
+                "data": {"errors": [
+                    {"code": "E112", "level": "item", "message": "Item IDs are incorrect"},
+                ]},
+            }))
+            result = self.adapter.send_asn({})
+
+        assert result["success"] is True
+        assert result["ack"].item_errors[0]["code"] == "E112"
+
+    def test_send_asn_rejection_is_not_retried(self) -> None:
+        """A rejection is a verdict on the content; resending the same body repeats it."""
+        import httpx
+        import respx
+
+        calls = {"n": 0}
+
+        def _count(request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            return httpx.Response(200, json={
+                "asn_sync_status": "REJECTED",
+                "data": {"errors": [{"code": "E107", "level": "asn",
+                                     "message": "Invoice number already exists"}]},
+            })
+
+        with respx.mock:
+            respx.post(self._asn_url()).mock(side_effect=_count)
+            result = self.adapter.send_asn({})
+
+        assert result["success"] is False
+        assert calls["n"] == 1
 
     def test_send_asn_rate_limited(self) -> None:
-        import respx
         import httpx
+        import respx
 
         responses = [
             httpx.Response(429, headers={"Retry-After": "2"}),
-            httpx.Response(200, json={"asn_id": "ASN-BL-0001"}),
+            httpx.Response(200, json={"asn_sync_status": "ACCEPTED", "asn_id": "ASN-BL-0001"}),
         ]
 
         slept: list[float] = []

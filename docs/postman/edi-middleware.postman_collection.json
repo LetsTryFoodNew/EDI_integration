@@ -805,6 +805,37 @@
       "description": "SAP pushes A/R Invoices here; receiving one raises and dispatches its ASN.",
       "item": [
         {
+          "name": "SAP pushes invoice → raises Blinkit ASN (full pipeline)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/invoices",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "invoices"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"invoices\": [\n    {\n      \"invoice_number\": \"LTF/26-27/001842\",\n      \"invoice_date\": \"2026-08-20\",\n      \"partner_code\": \"BLINKIT\",\n      \"po_number\": \"2264110009002\",\n      \"b1_sales_order_doc_entry\": 1771,\n      \"b1_invoice_doc_entry\": 9001,\n      \"b1_invoice_doc_num\": 3100077,\n      \"irn\": \"a5c9f1e2b7d84a3c9e6f1b2d7a8c4e5f6b3d9a1c7e2f8b4d6a9c3e5f1b7d2a8c\",\n      \"eway_bill_number\": \"351002468971\",\n      \"eway_bill_date\": \"2026-08-20\",\n      \"subtotal_amount\": \"43508.40\",\n      \"cgst_amount\": \"1087.71\",\n      \"sgst_amount\": \"1087.71\",\n      \"igst_amount\": \"0.00\",\n      \"cess_amount\": \"0.00\",\n      \"round_off\": \"0.18\",\n      \"grand_total\": \"45684.00\",\n      \"shipment_date\": \"2026-08-21\",\n      \"carrier\": \"BlueDart\",\n      \"tracking_number\": \"BD-MH-77410238\",\n      \"line_items\": [\n        {\n          \"b1_item_code\": \"FG00310\",\n          \"buyer_sku\": \"10116317\",\n          \"po_line_number\": 1,\n          \"description\": \"Let's Try Pudina MaKhana 57g\",\n          \"hsn_code\": \"21069099\",\n          \"qty\": \"360\",\n          \"uom\": \"PCS\",\n          \"unit_price\": \"67.05\",\n          \"taxable_amount\": \"24138.00\",\n          \"cgst_rate\": \"2.50\",\n          \"cgst_amount\": \"603.45\",\n          \"sgst_rate\": \"2.50\",\n          \"sgst_amount\": \"603.45\",\n          \"igst_rate\": \"0.00\",\n          \"igst_amount\": \"0.00\",\n          \"cess_rate\": \"0.00\",\n          \"cess_amount\": \"0.00\",\n          \"line_total\": \"25344.90\",\n          \"batch_number\": \"LTF26H12A\",\n          \"expiry_date\": \"2027-02-12\"\n        },\n        {\n          \"b1_item_code\": \"FG00233\",\n          \"buyer_sku\": \"10116320\",\n          \"po_line_number\": 2,\n          \"description\": \"Let's Try Khatta Metha 173g\",\n          \"hsn_code\": \"21069099\",\n          \"qty\": \"240\",\n          \"uom\": \"PCS\",\n          \"unit_price\": \"62.86\",\n          \"taxable_amount\": \"15086.40\",\n          \"cgst_rate\": \"2.50\",\n          \"cgst_amount\": \"377.16\",\n          \"sgst_rate\": \"2.50\",\n          \"sgst_amount\": \"377.16\",\n          \"igst_rate\": \"0.00\",\n          \"igst_amount\": \"0.00\",\n          \"cess_rate\": \"0.00\",\n          \"cess_amount\": \"0.00\",\n          \"line_total\": \"15840.72\",\n          \"batch_number\": \"LTF26H09B\",\n          \"expiry_date\": \"2027-01-09\"\n        },\n        {\n          \"b1_item_code\": \"FG00322\",\n          \"buyer_sku\": \"10117527\",\n          \"po_line_number\": 3,\n          \"description\": \"Let's Try Potato Wafer 52g\",\n          \"hsn_code\": \"21069099\",\n          \"qty\": \"180\",\n          \"uom\": \"PCS\",\n          \"unit_price\": \"23.80\",\n          \"taxable_amount\": \"4284.00\",\n          \"cgst_rate\": \"2.50\",\n          \"cgst_amount\": \"107.10\",\n          \"sgst_rate\": \"2.50\",\n          \"sgst_amount\": \"107.10\",\n          \"igst_rate\": \"0.00\",\n          \"igst_amount\": \"0.00\",\n          \"cess_rate\": \"0.00\",\n          \"cess_amount\": \"0.00\",\n          \"line_total\": \"4498.20\",\n          \"batch_number\": \"LTF26H15C\",\n          \"expiry_date\": \"2026-12-15\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "description": "Invoice for the SAP-ready Blinkit PO (see Webhooks folder). Storing it raises the 856 and queues it for Blinkit in that partner's own wire format.\n\n`batch_number` and `expiry_date` per line are what make the ASN valid — Blinkit marks both mandatory (§12.3, §12.16). Without them the ASN is still built and sent, but with warnings.\n\n**Always read `results[]`, not just the counters.** An invoice can be stored yet HELD, with `asn_dispatched: false` and the reason in `issues[]`.\n\nIdempotent on `invoice_number`: re-pushing updates (typically to add the IRN once the IRP responds) rather than duplicating.\n\nInspect the generated ASN payload afterwards on the PO detail page → Outbound tab, or via GET /api/pos/{{poId}}."
+          }
+        },
+        {
           "name": "Push invoice from SAP",
           "request": {
             "method": "POST",

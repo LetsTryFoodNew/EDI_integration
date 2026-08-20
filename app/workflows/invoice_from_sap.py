@@ -483,13 +483,43 @@ def _queue_asn_dispatch(db: Session, po: Any, asn: Any, invoice: Any) -> None:
         trading_partner_id=po.trading_partner_id,
         doc_type=EdiDocType.ASN_856,
         external_reference=asn.asn_number,
-        payload=_asn_payload(po, asn, invoice),
+        payload=_partner_asn_payload(db, po, asn, invoice, partner),
         channel=channel,
         status="PENDING",
         attempt_count=0,
         next_retry_at=datetime.now(UTC),
     ))
     db.flush()
+
+
+def _partner_asn_payload(
+    db: Session, po: Any, asn: Any, invoice: Any, partner: Any
+) -> dict[str, Any]:
+    """
+    Shape the ASN for whoever is receiving it.
+
+    Partners whose contract we hold get their exact wire format built here, at creation
+    time, so what will be sent is visible in the outbound tab *before* dispatch rather
+    than materialising inside the adapter. Everyone else gets the partner-neutral body
+    below, which their adapter reshapes.
+    """
+    from sqlalchemy import select
+
+    from app.models.master_data import SellerEntity
+
+    code = getattr(partner, "code", "")
+    if code == "BLINKIT":
+        from app.adapters.outbound.blinkit_asn import build_blinkit_asn_payload
+
+        seller = db.execute(
+            select(SellerEntity).where(SellerEntity.deleted_at.is_(None)).limit(1)
+        ).scalar_one_or_none()
+        payload, warnings = build_blinkit_asn_payload(db, po, asn, invoice, partner, seller)
+        for w in warnings:
+            log.warning("asn.blinkit.payload_warning", po=po.buyer_po_number, warning=w)
+        return payload
+
+    return _asn_payload(po, asn, invoice)
 
 
 def _asn_payload(po: Any, asn: Any, invoice: Any) -> dict[str, Any]:
