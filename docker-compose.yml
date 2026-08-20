@@ -112,9 +112,32 @@ services:
     environment:
       DATABASE_SYNC_URL: postgresql+psycopg2://edi:${POSTGRES_PASSWORD:-edipass}@postgres:5432/edi_middleware_update
       REDIS_URL: redis://redis:6379/0
-    command: ["rq", "worker", "sap", "--url", "redis://redis:6379/0"]
+    command: ["rq", "worker", "sap_push", "--url", "redis://redis:6379/0"]
     deploy:
       replicas: 1   # must not scale beyond 1 without checking B1 session pool size
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ── Worker: outbound documents (855 ACK, 856 ASN, 810 Invoice, credit notes) ─
+  # Consumes the "outbound" queue, which the scheduler feeds from three jobs:
+  # poll_b1_outbound (ACK trigger, 5m), poll_b1_documents_backup (1h) and
+  # retry_pending_outbound (2m). Without this service those jobs pile up unread
+  # and nothing ever reaches a retailer — see CHANGELOG 2026-08-20.
+  worker-outbound:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_SYNC_URL: postgresql+psycopg2://edi:${POSTGRES_PASSWORD:-edipass}@postgres:5432/edi_middleware_update
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./credentials:/app/credentials
+    command: ["rq", "worker", "outbound", "--url", "redis://redis:6379/0"]
+    deploy:
+      replicas: 1   # partner APIs are rate-limited; do not scale without checking
     depends_on:
       postgres:
         condition: service_healthy

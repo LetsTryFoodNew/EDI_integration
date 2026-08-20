@@ -1,5 +1,147 @@
 # Changelog
 
+## Infra — the outbound queue had no worker (2026-08-20)
+
+Nothing the middleware produced for a retailer had ever been sent. Not one 855 ACK,
+not one 856 ASN. The queue names the code enqueued to and the queue names the workers
+consumed had drifted apart, and nothing in the system noticed.
+
+```
+code enqueues to:      ingest, sap_push, outbound
+workers listened on:   ingest, parse,    sap
+```
+
+`outbound` had **10,778 jobs** backed up and `sap_push` 10. `retry_pending_outbound`
+had been firing every two minutes exactly as designed, landing on a queue no process
+was reading.
+
+This was invisible from the UI, which is the worst part. An ASN sat at `PENDING` — the
+same state it holds for the thirty seconds before a real send — so the outbound tab
+looked like a queue draining normally rather than a queue with no drain. The SLA monitor
+could not catch it either: it flags an ACK sent late, and these were never *attempted*,
+so nothing was ever marked overdue.
+
+### Fixed
+
+- **`worker-outbound` added** to `docker-compose.yml`, consuming `outbound`.
+- **`worker-sap` repointed** from `sap` to `sap_push`, the name the code actually uses.
+  This is why **"Retry SAP Push" silently did nothing**: the button returned
+  `{"success": true, "message": "SAP push re-queued"}` and enqueued to a queue with no
+  consumer — after already flipping the PO from `SAP_REJECTED` back to `VALIDATED`, so
+  the PO looked like it was progressing while no push existed. The three orders that
+  did reach B1 (3000044–46) went through `push-to-sap-with`, which runs inline.
+- **Both queues drained.** Every stuck job is re-created by the next scheduler tick
+  (ACK trigger 5m, backup poll 1h, retry sweep 2m, SAP push sweep 1m), so nothing was
+  lost — and starting the worker on a full queue would have replayed a day of
+  backlogged polls in one burst.
+
+### The backlog was held before the worker came up, not after
+
+Starting `worker-outbound` against the existing data would have sent 4 ASNs and
+created + immediately dispatched 4 new 855 ACKs, all against fabricated smoke-test
+POs. Both partner base URLs are dev (`dev.partnersbiz.com`, `silkroute.zeptonow.dev`),
+so this was not going to reach a production retailer — but a shipment notice for goods
+that do not exist is not something to send anywhere, and an ASN cannot be retracted
+once delivered.
+
+So the backlog was held first, using semantics the code already had rather than a new
+status column:
+
+- The 4 `PENDING` ASNs got `next_retry_at = NULL`. `enqueue_due_retries` filters on
+  `next_retry_at IS NOT NULL AND <= now`, so a NULL is already "not scheduled".
+- The 4 confirmed POs got a `PO_ACK_855` row pre-created and held the same way.
+  `trigger_acks_for_confirmed_pos` creates an ACK *and enqueues it directly*, skipping
+  the retry sweep entirely — so holding had to mean the row already existing.
+
+Release one when it should genuinely go out:
+
+```sql
+UPDATE edi_outbound_messages SET next_retry_at = now() WHERE id = '<id>';
+```
+
+### Still outstanding
+
+`worker-parse` consumes `parse`, and **nothing enqueues to `parse`** — every parse job
+goes to `ingest` (`app/workflows/parse_and_persist.py:430`). The container has never
+processed a job. Left as-is rather than repointed at `ingest`, because that would double
+ingest concurrency against rate-limited partner APIs and is a separate call to make.
+
+## Phase 7 — Blinkit ASN (856) built to contract (2026-08-20)
+
+Invoice `LTF/26-27/001842` pushed against PO `2264110009002` (SAP Sales Order 3000046)
+raises ASN `ASN-LTF/26-27/001842`, queued for Blinkit in that partner's own wire format.
+
+Built from Blinkit's **"POVMS - ASN Sync API Contracts"** (rev 100226-093807), archived
+at `_archive/backend_old/assets/POVMS-ASN Sync API Contracts-*.txt` — a 13-page PDF
+despite the `.txt` extension. New module `app/adapters/outbound/blinkit_asn.py`; contract
+notes in `docs/blinkit-asn-api.md`.
+
+### A 2xx did not mean accepted, and we were treating it as one
+
+`send_asn` returned success on any HTTP 2xx. The contract states that full acceptance,
+partial acceptance **and rejection** all return 2xx, with the verdict in the body — and
+its own example response pairs `"successful": true` with `"asn_sync_status": "REJECTED"`,
+because the response field table defines `successful` as *"operation executed; does not
+mean all items succeeded"*.
+
+So a rejected ASN was recorded as delivered. Nobody would have found out until a truck
+was turned away at the DC, with the outbound tab still showing a green send.
+
+`interpret_asn_response()` now reads the body. It also honours the second rule that
+compounds this: **a single `level: "asn"` error rejects the whole submission**, even
+when item rows succeeded and even when `asn_sync_status` says `ACCEPTED`. Rejections are
+deliberately not retried — a rejection is a verdict on the content, so resending the
+identical body earns the identical answer.
+
+### The previous payload builder predated the contract
+
+`_build_blinkit_asn` in `b1_to_outbound.py` was a guess, and wrong in ways Blinkit would
+have rejected or silently mis-booked:
+
+- sent the **ASN number as `invoice_number`**
+- derived `mrp` as `unit_price * 1.18` — a fabricated retail price on a tax document
+- `delivery_type: "MTO"`, which is not one of the contract's `COURIER` / `SELF`
+- tax keys named `cgst`/`sgst`/`igst` rather than `*_percentage`
+- `uom` as a bare string where §12.19 wants `{"unit": "g", "value": 57}`
+- no `tax_distribution[]` header summary, `basic_price`, `landing_price`, `quantity`,
+  `item_count`, `case_config`, `batch_number`, `upc` or `hsn_code`
+
+Both the delivery-driven and invoice-driven paths now call the same builder, so they
+cannot drift into sending two shapes to one endpoint. The delivery path raises rather
+than inventing an invoice number when no invoice is attached — the contract is
+invoice-shaped, so there is nothing honest to send without one.
+
+Real data now fills the payload: EANs, case sizes and MRP come from `material_master`,
+`uom` is split from `grammage` (`"57g"` → `{"unit": "g", "value": 57}`),
+`unit_landing_price` is line total ÷ qty so it always agrees with the invoice, and
+`po_status` compares cumulative invoiced quantity across **all** invoices on the PO so
+the last of several partial shipments correctly reports `PO_FULFILLED`.
+
+All six item tax percentages are always sent, zeros included — §12.11 marks each
+mandatory, and omitting a key is not the same as sending `0`.
+
+### Noted for Blinkit
+
+The contract contradicts itself on the supplier address: the field-detail table says
+`addressLine1`/`addressLine2`, its JSON **and** XML examples say
+`address_line_1`/`address_line_2`. We follow the examples, since those are the wire
+format — worth confirming before go-live.
+
+### Verification
+
+- Payload generated from the real invoice, inspected field by field against the contract.
+- Dispatch exercised end-to-end with the stored payload against a mocked endpoint:
+  `ACCEPTED` → recorded sent; `REJECTED` **at HTTP 200** → recorded failed with `E108`
+  surfaced. The second case is what previously passed as success.
+- 317 → **342 passing**: 25 in `tests/unit/test_blinkit_asn.py`, plus the Blinkit adapter
+  ASN tests rewritten — they had been asserting a fabricated response shape (`success`
+  rather than the contract's `successful`/`asn_sync_status`).
+- `ruff check app/` and `mypy` clean on the new modules.
+
+**Not sent to Blinkit.** This is fabricated shipment data, and announcing a delivery that
+is not happening to a live retailer system — even pre-prod — is not something to do for a
+smoke test. The ASN sits `PENDING` in the outbound queue awaiting a real dispatch.
+
 ## Fix — B1 log serialization 500s once a PO was actually pushed (2026-08-19)
 
 `GET /api/pos/{id}` returned 500 for any PO with a SAP push behind it:
