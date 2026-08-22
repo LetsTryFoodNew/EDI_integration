@@ -204,6 +204,43 @@ def _num_str(v: Any) -> str:
     return f"{_money(v):f}"
 
 
+def _num(v: Any) -> int | float:
+    """
+    Encode an integral value as an int, everything else as a float.
+
+    Blinkit's API is Go. `json.Unmarshal` accepts the literal `360` into either an
+    `int` or a `float64` field, but refuses `360.0` for an `int` one:
+
+        cannot unmarshal number 360.0 into Go struct field
+        Item.items.quantity of type int
+
+    The contract calls these fields "number" without saying which, so the only
+    encoding safe against both is the narrower one. Genuinely fractional values
+    (gst_percentage 2.5, gst_total 1087.71) still go out as floats -- an `int`
+    field would reject those whatever we did.
+    """
+    d = _d(v)
+    return int(d) if d == d.to_integral_value() else float(d)
+
+
+def _qty(v: Any, label: str, warnings: list[str]) -> int:
+    """
+    Item quantity, which Blinkit types as a Go `int`.
+
+    A fractional quantity cannot be represented on their side at all, so it is
+    rounded and called out rather than silently truncated -- a shipment notice
+    that understates what is on the truck is worse than one that fails to send.
+    """
+    d = _d(v)
+    rounded = int(d.to_integral_value(ROUND_HALF_UP))
+    if d != d.to_integral_value():
+        warnings.append(
+            f"{label}: quantity {d} is not a whole number; Blinkit types this field "
+            f"as an integer, so {rounded} was sent."
+        )
+    return rounded
+
+
 def _iso(d: date | datetime | None) -> str | None:
     if d is None:
         return None
@@ -279,10 +316,10 @@ def build_blinkit_asn_payload(
             ),
             "upc": upc,
             "case_config": case_size,
-            "quantity": float(qty),
-            "mrp": float(_money(getattr(material, "mrp", None))),
+            "quantity": _qty(qty, f"Item {inv_line.b1_item_code}", warnings),
+            "mrp": _num(_money(getattr(material, "mrp", None))),
             "hsn_code": inv_line.hsn_code or getattr(material, "hsn", None) or "",
-            "total_additional_cess_value": float(_money(inv_line.cess_amount)),
+            "total_additional_cess_value": _num(_money(inv_line.cess_amount)),
             # §12.11 — every percentage present, zeros included. Omitting a key is not
             # the same as sending 0, and all six are marked mandatory.
             "tax_distribution": {
@@ -329,7 +366,7 @@ def build_blinkit_asn_payload(
         "invoice_number": invoice.invoice_number,
         "invoice_date": _iso(invoice.invoice_date),
         "delivery_date": _iso(asn.shipment_date or invoice.invoice_date),
-        "total_additional_cess_value": float(_money(invoice.cess_amount)),
+        "total_additional_cess_value": _num(_money(invoice.cess_amount)),
         "tax_distribution": _header_tax_distribution(inv_lines),
         "basic_price": _num_str(invoice.subtotal_amount or basic_total),
         "landing_price": _num_str(invoice.grand_total),
@@ -373,8 +410,8 @@ def _header_tax_distribution(inv_lines: list[Any]) -> list[dict[str, Any]]:
     return [
         {
             "gst_type": gst_type,
-            "gst_percentage": float(Decimal(rate)),
-            "gst_total": float(_money(v["total"])),
+            "gst_percentage": _num(Decimal(rate)),
+            "gst_total": _num(_money(v["total"])),
             "taxable_value": _num_str(v["taxable"]),
         }
         for (gst_type, rate), v in buckets.items()
@@ -417,7 +454,7 @@ def _material_for(session: Session, item_code: str | None) -> Any:
     ).scalar_one_or_none()
 
 
-def _uom(material: Any, inv_line: Any) -> tuple[str, float]:
+def _uom(material: Any, inv_line: Any) -> tuple[str, int | float]:
     """
     §12.19 — `uom` is an object of unit and volume-per-unit ("ml"/12), not a bare code.
 
@@ -431,10 +468,10 @@ def _uom(material: Any, inv_line: Any) -> tuple[str, float]:
         unit = "".join(c for c in grammage if c.isalpha()).lower()
         if digits and unit:
             try:
-                return unit, float(digits)
-            except ValueError:
+                return unit, _num(Decimal(digits))
+            except ArithmeticError:
                 pass
-    return (inv_line.uom or getattr(material, "invntry_uom", None) or "PCS"), 1.0
+    return (inv_line.uom or getattr(material, "invntry_uom", None) or "PCS"), 1
 
 
 def _landing_price(inv_line: Any, qty: Decimal) -> Decimal:

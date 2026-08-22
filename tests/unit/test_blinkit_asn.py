@@ -304,3 +304,68 @@ class TestItems:
         payload, _ = _build()
         expected = {"mrp": 160.0, "case_config": 36}[field]
         assert payload["items"][0][field] == expected
+
+
+class TestGoNumericEncoding:
+    """
+    Blinkit's API is Go. `json.Unmarshal` takes `360` into either an int or a
+    float64 field but refuses `360.0` for an int one, which is how a valid ASN was
+    rejected with "cannot unmarshal number 360.0 into Go struct field
+    Item.items.quantity of type int". Integral values must go out as ints.
+    """
+
+    def test_integral_decimal_encodes_as_int(self) -> None:
+        from app.adapters.outbound.blinkit_asn import _num
+
+        for value in (Decimal("360"), Decimal("360.00"), 360, "360.0"):
+            out = _num(value)
+            assert isinstance(out, int), f"{value!r} -> {out!r} ({type(out).__name__})"
+            assert out == 360
+
+    def test_fractional_decimal_stays_float(self) -> None:
+        from app.adapters.outbound.blinkit_asn import _num
+
+        assert _num(Decimal("2.5")) == 2.5
+        assert isinstance(_num(Decimal("2.5")), float)
+        assert isinstance(_num(Decimal("1087.71")), float)
+
+    def test_zero_encodes_as_int(self) -> None:
+        from app.adapters.outbound.blinkit_asn import _num
+
+        assert _num(Decimal("0.00")) == 0
+        assert isinstance(_num(Decimal("0.00")), int)
+
+    def test_whole_quantity_needs_no_warning(self) -> None:
+        from app.adapters.outbound.blinkit_asn import _qty
+
+        warnings: list[str] = []
+        assert _qty(Decimal("360.00"), "Item FG00310", warnings) == 360
+        assert warnings == []
+
+    def test_fractional_quantity_rounds_and_warns(self) -> None:
+        from app.adapters.outbound.blinkit_asn import _qty
+
+        warnings: list[str] = []
+        assert _qty(Decimal("12.4"), "Item FG00310", warnings) == 12
+        assert len(warnings) == 1
+        assert "not a whole number" in warnings[0]
+        assert "FG00310" in warnings[0]
+
+    def test_uom_value_is_integral_for_whole_grammage(self) -> None:
+        from app.adapters.outbound.blinkit_asn import _uom
+
+        material = SimpleNamespace(grammage="57g", invntry_uom="PCS")
+        unit, value = _uom(material, SimpleNamespace(uom="PCS"))
+
+        assert unit == "g"
+        assert value == 57
+        assert isinstance(value, int)
+
+    def test_uom_fallback_value_is_int(self) -> None:
+        from app.adapters.outbound.blinkit_asn import _uom
+
+        material = SimpleNamespace(grammage=None, invntry_uom="PCS")
+        _unit, value = _uom(material, SimpleNamespace(uom="PCS"))
+
+        assert value == 1
+        assert isinstance(value, int)

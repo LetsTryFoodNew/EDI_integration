@@ -1,5 +1,50 @@
 # Changelog
 
+## Blinkit rejected our ASN because Go will not take 360.0 as an int (2026-08-22)
+
+First real contact with Blinkit's API from the whitelisted server, and it refused
+the ASN with HTTP 400:
+
+```
+invalid request body: failed to decode request body:
+json: cannot unmarshal number 360.0 into Go struct field
+Item.items.quantity of type int
+```
+
+Their API is Go. `encoding/json` accepts the literal `360` into either an `int` or
+a `float64` field, but refuses `360.0` for an `int` one. We were serialising every
+numeric through `float()`, so an ordered quantity of 360 went out as `360.0` and
+their decoder stopped at the first item.
+
+The contract calls the field a "number" (§12.7) without saying which, so the fix is
+to send the encoding both field types accept: `_num()` emits an int when the value
+is integral and a float otherwise. Thirteen fields changed shape on the stored
+payload — `quantity`, `mrp`, `uom.value` and `total_additional_cess_value` across
+all three lines. Genuinely fractional values are untouched: `gst_percentage` 2.5 and
+`gst_total` 1087.71 still go out as floats, since an `int` field would reject those
+whatever we did.
+
+`quantity` gets `_qty()` rather than `_num()`, because Blinkit types it as an
+integer outright. A fractional quantity is rounded **and warned about** instead of
+silently truncated — a shipment notice that understates what is on the truck is
+worse than one that fails to send.
+
+### Why the error was readable at all
+
+The previous entry's `_parse_blinkit_error` fix landed first. Before it, this same
+rejection recorded as `"Validation failed"` and nothing more, three times over.
+The Go decoder message names the exact field and value; we had been discarding it.
+
+### Stored payloads had to be rebuilt too
+
+The ASN body is built when the invoice arrives and parked in
+`edi_outbound_messages.payload`, so what will be sent is visible before dispatch.
+That also means a builder fix does not reach an ASN that is already queued — the
+retry re-sends the same bytes and earns the same rejection.
+`scripts/rebuild_asn_payloads.py` re-runs the builder over unsent BLINKIT messages,
+prints which fields changed type, and leaves `next_retry_at` alone so a held
+message stays held.
+
 ## Infra — the outbound queue had no worker (2026-08-20)
 
 Nothing the middleware produced for a retailer had ever been sent. Not one 855 ACK,
