@@ -262,13 +262,13 @@ class TestItems:
             "cgst_percentage", "sgst_percentage", "igst_percentage",
             "ugst_percentage", "cess_percentage", "additional_cess_value",
         }
-        assert tax["cgst_percentage"] == "2.50"
-        assert tax["igst_percentage"] == "0.00"
+        assert tax["cgst_percentage"] == 2.5
+        assert tax["igst_percentage"] == 0
 
     def test_uom_is_an_object_derived_from_grammage(self) -> None:
         """§12.19 wants unit plus volume-per-unit, not a bare UoM code."""
         payload, _ = _build()
-        assert payload["items"][0]["uom"] == {"unit": "g", "value": 57.0}
+        assert payload["items"][0]["uom"] == {"unit": "g", "value": 57}
 
     def test_uom_falls_back_without_inventing_a_volume(self) -> None:
         payload, _ = _build(materials={"FG00310": _material(grammage=None)})
@@ -369,3 +369,50 @@ class TestGoNumericEncoding:
 
         assert value == 1
         assert isinstance(value, int)
+
+
+class TestContractTypeOverrides:
+    """
+    Blinkit's field table disagrees with its running API and with its own JSON
+    examples. Where they conflict the API wins, so these encodings are pinned by
+    test — a "tidy-up" back to the documented types would break dispatch.
+    """
+
+    def test_item_tax_percentages_are_numbers(self) -> None:
+        """
+        §12.11 types all six as string. The API rejects that:
+          cannot unmarshal string into Go struct field
+          ItemTaxDistribution.items.tax_distribution.cess_percentage of type float64
+        """
+        payload, _ = _build()
+        taxes = payload["items"][0]["tax_distribution"]
+
+        for key in (
+            "cgst_percentage", "sgst_percentage", "igst_percentage",
+            "ugst_percentage", "cess_percentage", "additional_cess_value",
+        ):
+            assert isinstance(taxes[key], (int, float)), f"{key} must be numeric, got {taxes[key]!r}"
+            assert not isinstance(taxes[key], str)
+
+    def test_unit_basic_price_is_a_number(self) -> None:
+        """Unquoted in every contract JSON example, unlike its neighbours."""
+        item = _build()[0]["items"][0]
+
+        assert isinstance(item["unit_basic_price"], (int, float))
+        assert not isinstance(item["unit_basic_price"], str)
+
+    def test_neighbouring_price_fields_stay_strings(self) -> None:
+        """Quoted in the same examples — changing these would break what works."""
+        payload, _ = _build()
+
+        assert isinstance(payload["items"][0]["unit_landing_price"], str)
+        assert isinstance(payload["basic_price"], str)
+        assert isinstance(payload["landing_price"], str)
+        assert isinstance(payload["tax_distribution"][0]["taxable_value"], str)
+
+    def test_header_counts_stay_strings(self) -> None:
+        """§6/§7 say string and the API accepted them — decoding reached the items."""
+        payload, _ = _build()
+
+        assert isinstance(payload["quantity"], str)
+        assert isinstance(payload["item_count"], str)

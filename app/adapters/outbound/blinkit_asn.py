@@ -322,15 +322,29 @@ def build_blinkit_asn_payload(
             "total_additional_cess_value": _num(_money(inv_line.cess_amount)),
             # §12.11 — every percentage present, zeros included. Omitting a key is not
             # the same as sending 0, and all six are marked mandatory.
+            #
+            # The contract types all six as `string` (§12.11.1-12.11.6). Blinkit's
+            # implementation does not:
+            #
+            #     cannot unmarshal string into Go struct field
+            #     ItemTaxDistribution.items.tax_distribution.cess_percentage
+            #     of type float64
+            #
+            # Every field in that struct is float64, so all six go as numbers. Where
+            # the contract and the running API disagree, the API wins.
             "tax_distribution": {
-                "cgst_percentage": _num_str(inv_line.cgst_rate),
-                "sgst_percentage": _num_str(inv_line.sgst_rate),
-                "igst_percentage": _num_str(inv_line.igst_rate),
-                "ugst_percentage": _num_str(_ZERO),
-                "cess_percentage": _num_str(inv_line.cess_rate),
-                "additional_cess_value": _num_str(inv_line.cess_amount),
+                "cgst_percentage": _num(_money(inv_line.cgst_rate)),
+                "sgst_percentage": _num(_money(inv_line.sgst_rate)),
+                "igst_percentage": _num(_money(inv_line.igst_rate)),
+                "ugst_percentage": _num(_ZERO),
+                "cess_percentage": _num(_money(inv_line.cess_rate)),
+                "additional_cess_value": _num(_money(inv_line.cess_amount)),
             },
-            "unit_basic_price": _num_str(inv_line.unit_price),
+            # Unquoted in every JSON example in the contract (§12 samples), unlike
+            # unit_landing_price / taxable_value / basic_price / landing_price, which
+            # are quoted in the same samples and stay strings. The examples are the
+            # wire format; the field table is not reliable about types.
+            "unit_basic_price": _num(_money(inv_line.unit_price)),
             "unit_landing_price": _num_str(_landing_price(inv_line, qty)),
             "uom": {"unit": unit, "value": uom_value},
         }
