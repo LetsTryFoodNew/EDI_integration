@@ -562,3 +562,72 @@ class TestBlinkitWebhookRoute:
             assert resp.status_code == 200
         finally:
             app.dependency_overrides.clear()
+
+
+class TestParseBlinkitError:
+    """
+    A Blinkit 4xx carries the real fault in a nested errors array; the top-level
+    field is only ever a summary like "Validation failed". Keeping the summary
+    alone left the outbound tab saying a send failed without saying what to fix.
+    """
+
+    def test_flattens_nested_data_errors(self) -> None:
+        from app.adapters.api.blinkit_api import _parse_blinkit_error
+
+        body = json.dumps({
+            "successful": False,
+            "message": "Validation failed",
+            "data": {"errors": [
+                {"code": "E112", "level": "item", "item_id": 10116317,
+                 "message": "Item ID incorrect - revise mapping"},
+                {"code": "E109", "level": "asn", "message": "Supplier GSTIN mismatch"},
+            ]},
+        })
+        out = _parse_blinkit_error(body)
+
+        assert "Validation failed" in out
+        assert "E112@item" in out
+        assert "10116317" in out
+        assert "Item ID incorrect" in out
+        assert "E109@asn" in out
+        assert "Supplier GSTIN mismatch" in out
+
+    def test_flattens_top_level_field_errors(self) -> None:
+        from app.adapters.api.blinkit_api import _parse_blinkit_error
+
+        body = json.dumps({
+            "message": "Validation failed",
+            "errors": [{"field": "invoice_date", "message": "must not precede PO issue date"}],
+        })
+        out = _parse_blinkit_error(body)
+
+        assert "invoice_date" in out
+        assert "must not precede PO issue date" in out
+
+    def test_summary_only_is_unchanged(self) -> None:
+        from app.adapters.api.blinkit_api import _parse_blinkit_error
+
+        assert _parse_blinkit_error(json.dumps({"message": "Validation failed"})) == "Validation failed"
+
+    def test_errors_without_summary_still_surface(self) -> None:
+        from app.adapters.api.blinkit_api import _parse_blinkit_error
+
+        out = _parse_blinkit_error(json.dumps({"errors": [{"code": "E114", "message": "Codes mandatory"}]}))
+
+        assert "E114" in out
+        assert "Codes mandatory" in out
+
+    def test_non_json_body_passes_through(self) -> None:
+        from app.adapters.api.blinkit_api import _parse_blinkit_error
+
+        assert "502 Bad Gateway" in _parse_blinkit_error("<html>502 Bad Gateway</html>")
+
+    def test_long_body_is_capped(self) -> None:
+        from app.adapters.api.blinkit_api import _ERROR_MAX_CHARS, _parse_blinkit_error
+
+        body = json.dumps({
+            "message": "Validation failed",
+            "errors": [{"code": f"E{i}", "message": "x" * 200} for i in range(50)],
+        })
+        # Summary plus separator sit outside the cap applied to the joined details.
+        assert len(_parse_blinkit_error(body)) <= _ERROR_MAX_CHARS + len("Validation failed | ")

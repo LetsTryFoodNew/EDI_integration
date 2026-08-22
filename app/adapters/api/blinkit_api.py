@@ -33,6 +33,9 @@ _PROD_BASE = "https://api.partnersbiz.com"
 
 _MAX_RETRIES = 3
 _RETRY_BACKOFF = (1, 5, 30)  # seconds between retries
+# Cap on a flattened error string. Long enough for several field errors, short
+# enough that error_message stays readable in the outbound tab.
+_ERROR_MAX_CHARS = 1500
 
 
 class BlinkitApiAdapter:
@@ -119,6 +122,7 @@ class BlinkitApiAdapter:
                     po_number=po_number,
                     status_code=exc.response.status_code,
                     attempt=attempt,
+                    error=_parse_blinkit_error(exc.response.text),
                 )
                 if attempt < _MAX_RETRIES and exc.response.status_code >= 500:
                     time.sleep(backoff)
@@ -207,6 +211,7 @@ class BlinkitApiAdapter:
                     "blinkit.asn.http_error",
                     status_code=exc.response.status_code,
                     attempt=attempt,
+                    error=_parse_blinkit_error(exc.response.text),
                 )
                 if attempt < _MAX_RETRIES and exc.response.status_code >= 500:
                     time.sleep(backoff)
@@ -230,16 +235,78 @@ class BlinkitApiAdapter:
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _parse_blinkit_error(body: str | bytes) -> str:
+    """
+    Flatten a Blinkit 4xx body into one diagnosable line.
+
+    The summary field alone is useless: a rejected ASN comes back as
+    `{"message": "Validation failed", ...}` with the *actual* fault in a nested
+    errors array. Keeping only the summary left "Validation failed" in
+    error_message and threw away which field Blinkit objected to, so the outbound
+    tab said a send had failed without saying what to fix. Returns the summary
+    followed by every error entry found, so the retry that follows is
+    diagnosable from the log alone.
+    """
     import json
+
     if isinstance(body, bytes):
         body = body.decode("utf-8", errors="replace")
     try:
         parsed = json.loads(body)
     except Exception:
-        return body
-    if isinstance(parsed, dict):
-        for key in ("message", "error", "detail", "description"):
-            if parsed.get(key):
-                return str(parsed[key])
-        return json.dumps(parsed)
-    return str(parsed)
+        return body[:_ERROR_MAX_CHARS]
+    if not isinstance(parsed, dict):
+        return str(parsed)[:_ERROR_MAX_CHARS]
+
+    summary = ""
+    for key in ("message", "error", "detail", "description"):
+        if parsed.get(key):
+            summary = str(parsed[key])
+            break
+
+    details = [_format_error_entry(e) for e in _collect_error_entries(parsed)]
+    details = [d for d in details if d]
+
+    if not summary and not details:
+        return json.dumps(parsed)[:_ERROR_MAX_CHARS]
+    if not details:
+        return summary[:_ERROR_MAX_CHARS]
+    return f"{summary or 'Rejected'} | " + "; ".join(details)[:_ERROR_MAX_CHARS]
+
+
+def _collect_error_entries(parsed: dict[str, Any]) -> list[Any]:
+    """Gather error rows from wherever Blinkit puts them on a 4xx."""
+    nested = parsed.get("data")
+    containers: list[Any] = [parsed, nested if isinstance(nested, dict) else {}]
+    entries: list[Any] = []
+    for container in containers:
+        for key in ("errors", "validationErrors", "fieldErrors", "details"):
+            found = container.get(key)
+            if isinstance(found, list):
+                entries.extend(found)
+    return entries
+
+
+def _format_error_entry(entry: Any) -> str:
+    """One error row as `[code@level] field: message` — whichever parts are present."""
+    if not isinstance(entry, dict):
+        return str(entry)
+
+    code = entry.get("code") or entry.get("error_code") or entry.get("errorCode")
+    level = entry.get("level")
+    tag = f"{code}@{level}" if code and level else (str(code or level or "") or "")
+
+    field = entry.get("field") or entry.get("item_id") or entry.get("path")
+    message = (
+        entry.get("message")
+        or entry.get("description")
+        or entry.get("detail")
+        or entry.get("reason")
+        or ""
+    )
+    if not message and not field:
+        import json
+
+        return json.dumps(entry)
+
+    parts = [p for p in (f"[{tag}]" if tag else "", f"{field}:" if field else "", str(message)) if p]
+    return " ".join(parts)
