@@ -36,9 +36,10 @@ export async function retrySAPPush(poId: string): Promise<void> {
   await apiClient.post(`/api/pos/${poId}/retry-sap`);
 }
 
-export async function cancelPO(poId: string): Promise<void> {
-  await apiClient.post(`/api/pos/${poId}/cancel`);
-}
+// cancelPO was removed from the UI: neither Blinkit nor Zepto exposes a PO
+// cancellation API, so the button only ever changed our own status while the retailer
+// still had the PO open. POST /api/pos/{id}/cancel still exists for API callers that
+// genuinely want to stop our pipeline acting on a PO.
 
 export interface POUpdatePayload {
   buyer_po_number?: string;
@@ -78,6 +79,27 @@ export interface InvoiceAsnActionResult {
   queued: boolean;
   validation_override: boolean;
   message: string;
+}
+
+export interface InvoiceAsnCancelResult {
+  invoice_id: string;
+  asn_number: string;
+  cancelled: boolean;
+  partner_code: string;
+  partner_reference: string | null;
+  already_cancelled: boolean;
+  message: string;
+}
+
+/**
+ * Withdraw an ASN from the partner that accepted it.
+ *
+ * Only Zepto has a cancellation endpoint; Blinkit's contract defines creation only,
+ * so the backend answers 400 with that reason rather than pretending.
+ */
+export async function cancelInvoiceAsn(invoiceId: string): Promise<InvoiceAsnCancelResult> {
+  const res = await apiClient.post<InvoiceAsnCancelResult>(`/api/invoices/${invoiceId}/cancel-asn`);
+  return res.data;
 }
 
 export async function sendInvoiceAsn(invoiceId: string): Promise<InvoiceAsnActionResult> {

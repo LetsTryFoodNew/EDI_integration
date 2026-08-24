@@ -303,6 +303,96 @@ class ZeptoApiAdapter(BaseApiAdapter):
 
         return {"success": False, "error": "Max retries exceeded"}
 
+    def cancel_asn(
+        self,
+        asn_number: str,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Cancel a previously accepted ASN (contract §2.b).
+
+            DELETE /api/v1/external/asn?asnNumber=JAI005MEA00972
+
+        `asn_number` is **Zepto's** id, returned as `data.asnNumber` when they accepted
+        the ASN -- not our ASN-... reference. Sending ours cancels nothing.
+
+        This is the only way to correct a sent ASN: the contract states there is no
+        update endpoint, so a wrong one must be cancelled and re-created under a
+        *different* invoiceNumber. Re-using the invoice number after cancelling is
+        rejected as a duplicate.
+
+        Retries follow the same rule as creation -- 5xx only. A 4xx here means the ASN
+        number is unknown or already cancelled, and repeating the call cannot change it.
+        """
+        import uuid as _uuid
+
+        if not asn_number:
+            return {"success": False, "error": "No Zepto asnNumber to cancel", "permanent": True}
+
+        url = self._build_url("/api/v1/external/asn")
+        key = idempotency_key or str(_uuid.uuid4())
+
+        for attempt, backoff in enumerate(_RETRY_BACKOFF, start=1):
+            self._rate_limit_wait()
+            try:
+                with httpx.Client(timeout=30) as client:
+                    resp = client.delete(
+                        url, params={"asnNumber": asn_number}, headers=self._headers(key)
+                    )
+                self._last_request_time = time.monotonic()
+
+                body = resp.json() if resp.content else {}
+                proxy_err = _check_proxy_error(body)
+                if proxy_err:
+                    log.error("zepto.asn_cancel.proxy_error", asn_number=asn_number, **proxy_err)
+                    return {"success": False, **proxy_err}
+
+                resp.raise_for_status()
+                data = _unwrap(body) if body else {}
+                errors = data.get("errors") or []
+                if errors:
+                    detail = _errors_to_text(errors)
+                    log.error(
+                        "zepto.asn_cancel.rejected", asn_number=asn_number, error=detail
+                    )
+                    return {
+                        "success": False,
+                        "status_code": resp.status_code,
+                        "error": detail,
+                        "permanent": True,
+                    }
+
+                log.info("zepto.asn_cancel.ok", asn_number=asn_number)
+                return {"success": True, "status_code": resp.status_code, "data": data}
+
+            except httpx.HTTPStatusError as exc:
+                detail = _zepto_error_msg(exc.response.text)
+                log.error(
+                    "zepto.asn_cancel.http_error",
+                    asn_number=asn_number,
+                    status_code=exc.response.status_code,
+                    attempt=attempt,
+                    error=detail,
+                )
+                if attempt < _MAX_RETRIES and exc.response.status_code >= 500:
+                    time.sleep(backoff)
+                    continue
+                return {
+                    "success": False,
+                    "status_code": exc.response.status_code,
+                    "error": detail,
+                    "permanent": exc.response.status_code < 500,
+                }
+
+            except Exception as exc:
+                log.error("zepto.asn_cancel.error", asn_number=asn_number, error=str(exc))
+                if attempt < _MAX_RETRIES:
+                    time.sleep(backoff)
+                    continue
+                return {"success": False, "error": str(exc)}
+
+        return {"success": False, "error": "Max retries exceeded"}
+
     # ── Internal ──────────────────────────────────────────────────────────────
 
     def _fetch_page(

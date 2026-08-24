@@ -24,24 +24,13 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useToast } from "@/hooks/use-toast";
 import StatusBadge from "@/components/shared/StatusBadge";
 import DateDisplay from "@/components/shared/DateDisplay";
 import MoneyDisplay from "@/components/shared/MoneyDisplay";
 import { Skeleton } from "@/components/ui/skeleton";
-import { fetchPODetail, fetchPOInvoices, sendInvoiceAsn, downloadInvoicePdf, retrySAPPush, cancelPO, updatePO, revalidatePO } from "./api";
+import { fetchPODetail, fetchPOInvoices, sendInvoiceAsn, cancelInvoiceAsn, downloadInvoicePdf, retrySAPPush, updatePO, revalidatePO } from "./api";
 import SapPushDialog from "./components/SapPushDialog";
 import type { POUpdatePayload } from "./api";
 import type { Invoice, PODetail } from "@/types";
@@ -353,6 +342,30 @@ function InvoiceDetailDialog({
   const queryClient = useQueryClient();
   const [downloading, setDownloading] = useState(false);
 
+  const cancelAsn = useMutation({
+    mutationFn: () => cancelInvoiceAsn(invoice!.id),
+    onSuccess: (result) => {
+      toast({
+        title: result.already_cancelled ? "Already cancelled" : "ASN cancelled",
+        description: result.message,
+      });
+      queryClient.invalidateQueries({ queryKey: ["po", invoice?.po_id, "invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["po", invoice?.po_id] });
+    },
+    onError: (err: unknown) => {
+      // 400 here is usually "this partner has no cancellation endpoint" — the reason
+      // is the whole message, so show the server's wording rather than a generic one.
+      const detail =
+        (err as { response?: { data?: { error?: { message?: string } } } })?.response?.data?.error
+          ?.message ?? (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      toast({
+        title: "Cancellation refused",
+        description: detail ?? "Could not cancel this ASN.",
+        variant: "destructive",
+      });
+    },
+  });
+
   const sendAsn = useMutation({
     mutationFn: () => sendInvoiceAsn(invoice!.id),
     onSuccess: (result) => {
@@ -505,6 +518,20 @@ function InvoiceDetailDialog({
             )}
             Download PDF
           </Button>
+          {invoice.asn_number && (
+            <Button
+              variant="outline"
+              onClick={() => cancelAsn.mutate()}
+              disabled={cancelAsn.isPending}
+            >
+              {cancelAsn.isPending ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <XCircle className="h-4 w-4 mr-2" />
+              )}
+              Cancel ASN
+            </Button>
+          )}
           <Button onClick={() => sendAsn.mutate()} disabled={sendAsn.isPending}>
             {sendAsn.isPending ? (
               <Loader2 className="h-4 w-4 mr-2 animate-spin" />
@@ -731,15 +758,6 @@ export default function PODetailPage() {
     onError: () => toast({ title: "Re-validation failed", variant: "destructive" }),
   });
 
-  const cancelMutation = useMutation({
-    mutationFn: () => cancelPO(poId!),
-    onSuccess: () => {
-      toast({ title: "PO cancelled" });
-      queryClient.invalidateQueries({ queryKey: ["pos", poId] });
-    },
-    onError: () => toast({ title: "Cancel failed", variant: "destructive" }),
-  });
-
   const [activeTab, setActiveTab] = useState("overview");
 
   if (isLoading) {
@@ -766,7 +784,6 @@ export default function PODetailPage() {
   ).length;
   const canPushToSap = ["PARSED", "VALIDATED", "EXCEPTION"].includes(po.po_status);
   const pushBlocked = openErrorCount > 0;
-  const canCancel = ["PARSED", "VALIDATED", "EXCEPTION", "SAP_REJECTED"].includes(po.po_status);
   const canEdit = !["SAP_CONFIRMED", "CANCELLED", "SUPERSEDED"].includes(po.po_status);
 
   return (
@@ -884,36 +901,6 @@ export default function PODetailPage() {
             </Button>
           )}
 
-          {canCancel && (
-            <AlertDialog>
-              <AlertDialogTrigger className="inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-sm hover:bg-accent transition-colors">
-                <XCircle className="h-4 w-4" />
-                Cancel PO
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>Cancel this PO?</AlertDialogTitle>
-                  <AlertDialogDescription>
-                    PO <strong>{po.buyer_po_number}</strong> will be marked as cancelled. This cannot
-                    be undone.
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel>Keep PO</AlertDialogCancel>
-                  <AlertDialogAction
-                    onClick={() => cancelMutation.mutate()}
-                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                  >
-                    {cancelMutation.isPending ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      "Cancel PO"
-                    )}
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
-          )}
         </div>
       </div>
 

@@ -1281,6 +1281,17 @@ class InvoiceAsnActionResponse(BaseModel):
     message: str
 
 
+class InvoiceAsnCancelResponse(BaseModel):
+    """Result of cancelling an ASN with the partner that accepted it."""
+    invoice_id: uuid.UUID
+    asn_number: str
+    cancelled: bool
+    partner_code: str
+    partner_reference: str | None = None
+    already_cancelled: bool = False
+    message: str
+
+
 class InvoiceLineItemResponse(BaseModel):
     id: uuid.UUID
     b1_item_code: str | None

@@ -148,7 +148,11 @@ def send_outbound_message(outbound_msg_id: UUID) -> SendResult:
             if result.success:
                 msg2.status = "SENT"
                 msg2.ack_received_at = datetime.now(UTC)
-                msg2.external_reference = result.external_ref
+                # Their id goes in partner_reference; ours stays in external_reference.
+                # Overwriting ours destroyed the only handle we had on the document at
+                # the exact moment it became real.
+                if result.external_ref:
+                    msg2.partner_reference = result.external_ref
                 msg2.error_message = None
                 s2.commit()
                 log.info(

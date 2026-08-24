@@ -32,6 +32,7 @@ class EdiOutboundMessage(Base):
         Index("ix_outbound_po_id", "po_id"),
         Index("ix_outbound_status", "status"),
         Index("ix_outbound_next_retry", "next_retry_at"),
+        Index("ix_outbound_partner_reference", "partner_reference"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -42,6 +43,11 @@ class EdiOutboundMessage(Base):
         Enum(EdiDocType, name="edi_doc_type_t", create_type=False), nullable=False
     )
     external_reference: Mapped[str | None] = mapped_column(String(200))
+    # The id the partner gave this document once they accepted it (Zepto's asnNumber,
+    # Blinkit's asn_id). Kept apart from external_reference, which stays ours -- Zepto's
+    # cancellation API takes their id, and cancel-then-recreate is the only way to
+    # correct a sent ASN.
+    partner_reference: Mapped[str | None] = mapped_column(String(200))
     payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
 
     # API | EMAIL

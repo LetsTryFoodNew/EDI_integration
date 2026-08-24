@@ -16,12 +16,13 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from app.api.deps import get_sync_db
 from app.api.routes.auth import get_current_user
 from app.schemas.api import (
     InvoiceAsnActionResponse,
+    InvoiceAsnCancelResponse,
     InvoicePushRequest,
     InvoicePushResult,
     InvoicePushResultItem,
@@ -224,6 +225,78 @@ def download_invoice_pdf(
         content=pdf,
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="invoice-{safe_name}.pdf"'},
+    )
+
+
+@router.post("/invoices/{invoice_id}/cancel-asn", response_model=InvoiceAsnCancelResponse)
+def cancel_invoice_asn(
+    invoice_id: uuid.UUID,
+    request: Request,
+    db: Session = Depends(get_sync_db),
+    current_user: UserResponse = Depends(get_current_user),
+) -> InvoiceAsnCancelResponse:
+    """
+    Withdraw this invoice's ASN from the partner that accepted it.
+
+    Only Zepto exposes a cancellation endpoint (contract v12 §2.b). Blinkit's ASN Sync
+    contract defines creation only, so this returns 400 with that reason rather than
+    marking anything cancelled — an ASN cancelled in our database while the retailer
+    still holds it is worse than one that was never cancelled, because their warehouse
+    is still expecting the truck and nobody here is watching for it any more.
+
+    Nothing local changes until the partner confirms. Afterwards the invoice needs a
+    **new invoice number** to re-ship: Zepto has no update API and rejects a re-used
+    invoiceNumber as a duplicate.
+    """
+    from app.models.asn import EdiAdvanceShipNotice
+    from app.models.audit_log import AuditLog
+    from app.models.invoice import EdiInvoice
+    from app.workflows.cancel_asn import cancel_asn as run_cancel
+
+    invoice = db.get(EdiInvoice, invoice_id)
+    if invoice is None:
+        raise HTTPException(status_code=404, detail=f"Invoice '{invoice_id}' not found")
+    if invoice.asn_id is None:
+        raise HTTPException(status_code=400, detail="This invoice has no ASN to cancel.")
+
+    asn = db.get(EdiAdvanceShipNotice, invoice.asn_id)
+    if asn is None:
+        raise HTTPException(status_code=404, detail="ASN row no longer exists.")
+
+    result = run_cancel(db, asn.id, cancelled_by=current_user.email)
+
+    if not result.success:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=result.error or "Cancellation failed")
+
+    db.add(AuditLog(
+        user_email=current_user.email,
+        action="cancel_invoice_asn",
+        entity_type="EdiInvoice",
+        entity_id=str(invoice_id),
+        payload={
+            "invoice_number": invoice.invoice_number,
+            "asn_number": result.asn_number,
+            "partner_reference": result.partner_reference,
+        },
+        ip_address=request.client.host if request.client else None,
+    ))
+    db.commit()
+
+    message = (
+        "ASN was already cancelled."
+        if result.already_cancelled
+        else f"ASN cancelled with {result.partner_code}. Re-ship under a new invoice "
+             f"number — the partner rejects a re-used one as a duplicate."
+    )
+    return InvoiceAsnCancelResponse(
+        invoice_id=invoice_id,
+        asn_number=result.asn_number,
+        cancelled=True,
+        partner_code=result.partner_code,
+        partner_reference=result.partner_reference,
+        already_cancelled=result.already_cancelled,
+        message=message,
     )
 
 
