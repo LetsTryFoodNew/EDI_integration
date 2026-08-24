@@ -11,6 +11,8 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
 
+
+
 def get_sync_db() -> Generator[Session, None, None]:
     """Yield a synchronous SQLAlchemy session; close it on exit."""
     with SyncSessionLocal() as session:
