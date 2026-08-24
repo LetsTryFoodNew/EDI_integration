@@ -213,6 +213,20 @@ class TestZeptoParser:
         assert line1.sgst_amount == Decimal("540.00")
         assert line1.line_total == Decimal("10080.00")  # 9000 + 540 + 540
 
+    def test_delivery_date_is_mapped(self) -> None:
+        """
+        Zepto sends deliveryDate on every PO, but the parser never read it, so every
+        Zepto PO showed a blank delivery date in the UI while Blinkit's and Swiggy's
+        were populated. The field existed on the canonical doc the whole time.
+        """
+        from datetime import date
+
+        result = self.parser.parse(_raw(self._load("zepto_po_event.json"), "ZEPTO"))
+
+        assert result.doc is not None
+        assert result.doc.requested_delivery_date == date(2024, 1, 20)
+
+
     def test_missing_po_number(self) -> None:
         payload = self._load("zepto_po_event.json")
         del payload["code"]

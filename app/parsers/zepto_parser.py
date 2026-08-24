@@ -161,6 +161,10 @@ class ZeptoParser(BaseParser):
             raw_message_id=getattr(raw_message, "id", None),
             buyer_po_number=po_number,
             buyer_po_date=_parse_date(payload.get("orderDate")),
+            # Zepto sends this on every PO and the canonical doc has carried the field
+            # all along -- it was simply never mapped here, so every Zepto PO showed a
+            # blank delivery date while Blinkit's and Swiggy's were populated.
+            requested_delivery_date=_parse_date(payload.get("deliveryDate")),
             ship_to=ship_to,
             buyer_gstin=fin.get("entityGSTIN"),
             buyer_name=payload.get("toStoreName") or payload.get("entityName"),
