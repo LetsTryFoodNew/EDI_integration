@@ -508,9 +508,55 @@ def _build_zepto_asn(
     delivery: dict[str, Any],
 ) -> dict[str, Any]:
     """
-    Build Zepto ASN (Silk Route) JSON payload.
-    Re-implemented from _archive/backend_old/app/services/zepto.py create_asn docstring.
+    Zepto ASN from a B1 delivery.
+
+    Delegates to the contract-aligned builder in app/adapters/outbound/zepto_asn.py so
+    the delivery-driven and invoice-driven paths cannot drift into sending two different
+    shapes to the same endpoint -- the exact split that had Blinkit's two paths
+    disagreeing until they were merged.
+
+    The version that used to live here predated the contract: it sent the ASN number as
+    `invoiceNumber`, named the array `lineItems` rather than `itemDetails`, omitted
+    `invoiceTotals` and `seller` entirely, and stamped every batch with today's date as
+    the expiry. Zepto rejected it with a list of missing mandatory fields.
+
+    Like Blinkit's, this path needs an invoice: the contract is invoice-shaped
+    (invoiceNumber, invoiceDate, invoiceTotals are all mandatory). With no invoice there
+    is nothing honest to send, so it raises rather than inventing one.
     """
+    from app.adapters.outbound.zepto_asn import build_zepto_asn_payload
+    from app.db import SyncSessionLocal
+
+    invoice = next(iter(asn.invoices or []), None)
+    if invoice is None:
+        raise ValueError(
+            f"ASN {asn.asn_number} has no invoice — Zepto's ASN contract is "
+            f"invoice-shaped and cannot be built from a delivery alone."
+        )
+
+    with SyncSessionLocal() as session:
+        from sqlalchemy import select
+
+        from app.models.master_data import SellerEntity, TradingPartner
+
+        partner = session.get(TradingPartner, po.trading_partner_id)
+        seller = session.execute(
+            select(SellerEntity).where(SellerEntity.deleted_at.is_(None)).limit(1)
+        ).scalar_one_or_none()
+        payload, warnings = build_zepto_asn_payload(session, po, asn, invoice, partner, seller)
+
+    for w in warnings:
+        log.warning("asn.payload_warning", partner="ZEPTO", po=po.buyer_po_number, warning=w)
+    return payload
+
+
+def _legacy_build_zepto_asn_unused(
+    po: Any,
+    lines: list[Any],
+    asn: Any,
+    delivery: dict[str, Any],
+) -> dict[str, Any]:
+    """Superseded by _build_zepto_asn above; kept only to document the old shape."""
     today = datetime.now(UTC).strftime("%Y-%m-%d")
     delivery_lines: list[dict[str, Any]] = delivery.get("DocumentLines") or []
     shipped_qty_map: dict[str, float] = {

@@ -1,5 +1,5 @@
 """
-Rebuild stored Blinkit ASN payloads from current data.
+Rebuild stored partner ASN payloads from current data.
 
 The ASN body is built once, when the invoice arrives, and parked in
 `edi_outbound_messages.payload` so what will be sent is visible before dispatch.
@@ -12,8 +12,9 @@ encoding fix (2026-08-22), which Blinkit rejected with:
     cannot unmarshal number 360.0 into Go struct field
     Item.items.quantity of type int
 
-Only touches BLINKIT messages that have not been sent. Prints a diff summary and
-leaves `next_retry_at` alone, so a held message stays held.
+Covers every partner with a contract-aligned builder (BLINKIT, ZEPTO) and touches
+only messages that have not been sent. Prints a diff summary and leaves
+`next_retry_at` alone, so a held message stays held.
 
     docker compose exec -T api python scripts/rebuild_asn_payloads.py [--apply]
 """
@@ -28,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from sqlalchemy import select  # noqa: E402
 
 from app.adapters.outbound.blinkit_asn import build_blinkit_asn_payload  # noqa: E402
+from app.adapters.outbound.zepto_asn import build_zepto_asn_payload  # noqa: E402
 from app.db import SyncSessionLocal  # noqa: E402
 from app.models._enums import EdiDocType  # noqa: E402
 from app.models.asn import EdiAdvanceShipNotice  # noqa: E402
@@ -37,6 +39,13 @@ from app.models.master_data import SellerEntity, TradingPartner  # noqa: E402
 from app.models.outbound import EdiOutboundMessage  # noqa: E402
 
 APPLY = "--apply" in sys.argv
+
+# Same registry as _partner_asn_payload in app/workflows/invoice_from_sap.py. A partner
+# absent here has no contract-aligned builder, so its stored body is left alone.
+BUILDERS = {
+    "BLINKIT": build_blinkit_asn_payload,
+    "ZEPTO": build_zepto_asn_payload,
+}
 
 
 def _typed(node: object, path: str = "") -> dict[str, str]:
@@ -69,7 +78,8 @@ def main() -> int:
 
         for msg in messages:
             partner = db.get(TradingPartner, msg.trading_partner_id)
-            if partner is None or partner.code != "BLINKIT":
+            builder = BUILDERS.get(getattr(partner, "code", ""))
+            if builder is None:
                 continue
 
             po = db.get(EdiPurchaseOrder, msg.po_id)
@@ -89,17 +99,17 @@ def main() -> int:
                 print(f"SKIP  {msg.external_reference}: no invoice linked")
                 continue
 
-            fresh, warnings = build_blinkit_asn_payload(db, po, asn, invoice, partner, seller)
+            fresh, warnings = builder(db, po, asn, invoice, partner, seller)
             before, after = _typed(msg.payload or {}), _typed(fresh)
             retyped = {k: (before[k], after[k]) for k in after if before.get(k) not in (None, after[k])}
 
             if json.dumps(msg.payload, sort_keys=True, default=str) == json.dumps(
                 fresh, sort_keys=True, default=str
             ) and not retyped:
-                print(f"SAME  {msg.external_reference}")
+                print(f"SAME  {partner.code:8} {msg.external_reference}")
                 continue
 
-            print(f"BUILD {msg.external_reference}  ({len(retyped)} field(s) re-typed)")
+            print(f"BUILD {partner.code:8} {msg.external_reference}  ({len(retyped)} field(s) re-typed)")
             for path, (was, now) in sorted(retyped.items())[:12]:
                 print(f"        {path}: {was} -> {now}")
             for w in warnings:

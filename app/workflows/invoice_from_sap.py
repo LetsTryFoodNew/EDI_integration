@@ -505,21 +505,29 @@ def _partner_asn_payload(
     """
     from sqlalchemy import select
 
+    from app.adapters.outbound.blinkit_asn import build_blinkit_asn_payload
+    from app.adapters.outbound.zepto_asn import build_zepto_asn_payload
     from app.models.master_data import SellerEntity
 
+    builders = {
+        "BLINKIT": build_blinkit_asn_payload,
+        "ZEPTO": build_zepto_asn_payload,
+    }
+
     code = getattr(partner, "code", "")
-    if code == "BLINKIT":
-        from app.adapters.outbound.blinkit_asn import build_blinkit_asn_payload
+    builder = builders.get(code)
+    if builder is None:
+        return _asn_payload(po, asn, invoice)
 
-        seller = db.execute(
-            select(SellerEntity).where(SellerEntity.deleted_at.is_(None)).limit(1)
-        ).scalar_one_or_none()
-        payload, warnings = build_blinkit_asn_payload(db, po, asn, invoice, partner, seller)
-        for w in warnings:
-            log.warning("asn.blinkit.payload_warning", po=po.buyer_po_number, warning=w)
-        return payload
-
-    return _asn_payload(po, asn, invoice)
+    seller = db.execute(
+        select(SellerEntity).where(SellerEntity.deleted_at.is_(None)).limit(1)
+    ).scalar_one_or_none()
+    payload, warnings = builder(db, po, asn, invoice, partner, seller)
+    for w in warnings:
+        log.warning(
+            "asn.payload_warning", partner=code, po=po.buyer_po_number, warning=w
+        )
+    return payload
 
 
 def _asn_payload(po: Any, asn: Any, invoice: Any) -> dict[str, Any]:
