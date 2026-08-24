@@ -77,7 +77,15 @@ def main() -> int:
     import requests
 
     session_id: str | None = None
-    base = b1_url.rstrip("/") + "/b1s/v1"
+    # Reuse the client's splitter rather than appending "/b1s/v1" blindly. This script
+    # used to do the latter, so a B1_SERVICE_LAYER_URL that already ends in /b1s/v2 --
+    # the form .env.example ships -- produced /b1s/v2/b1s/v1/Login and a 401 that reads
+    # exactly like bad credentials. The real client has always split correctly, so the
+    # script reported a broken connection for a setup that worked.
+    from app.sap_b1.client import _split_base_url
+
+    root, api_path = _split_base_url(b1_url)
+    base = f"{root}{api_path}"
     passed = 0
     total = 0
 
