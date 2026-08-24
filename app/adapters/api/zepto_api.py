@@ -239,8 +239,33 @@ class ZeptoApiAdapter(BaseApiAdapter):
 
                 resp.raise_for_status()
                 data = _unwrap(body)
-                asn_number = (data.get("data") or {}).get("asnNumber")
                 po_number = payload.get("purchaseOrderDetails", {}).get("purchaseOrderNumber")
+
+                # A 2xx means "processed", not "accepted". The contract's response
+                # structure carries an `errors` array alongside `data`, and a body with
+                # errors and no asnNumber is a refusal however healthy the status line
+                # looks. Reporting that as sent would mark a shipment notice delivered
+                # that Zepto never recorded.
+                errors = data.get("errors") or []
+                asn_number = (data.get("data") or {}).get("asnNumber")
+                if errors or not asn_number:
+                    detail = _errors_to_text(errors) or "no asnNumber returned"
+                    log.error(
+                        "zepto.asn.rejected",
+                        po_number=po_number,
+                        status_code=resp.status_code,
+                        error=detail,
+                    )
+                    return {
+                        "success": False,
+                        "status_code": resp.status_code,
+                        "data": data,
+                        "error": detail,
+                        # Content was understood and refused; resending it unchanged
+                        # earns the same answer.
+                        "permanent": True,
+                    }
+
                 log.info("zepto.asn.sent", po_number=po_number, asn_number=asn_number)
                 return {
                     "success": True,
@@ -263,6 +288,10 @@ class ZeptoApiAdapter(BaseApiAdapter):
                     "success": False,
                     "status_code": exc.response.status_code,
                     "error": _zepto_error_msg(exc.response.text),
+                    # Contract, Response Codes: "4XX Parsing Errors, Missing mandatory
+                    # fields. (retires wont work on this request)". 5xx is the retryable
+                    # class and is already handled above.
+                    "permanent": exc.response.status_code < 500,
                 }
 
             except Exception as exc:
@@ -492,3 +521,18 @@ def _zepto_error_msg(body: str | bytes | Any) -> str:
                 return body[key]
         return json.dumps(body)
     return str(body)
+
+
+def _errors_to_text(errors: Any) -> str:
+    """Flatten Zepto's `errors` array into one diagnosable line."""
+    if not isinstance(errors, list):
+        return str(errors or "")
+    parts: list[str] = []
+    for e in errors:
+        if isinstance(e, dict):
+            code = e.get("code") or e.get("errorCode") or ""
+            msg = e.get("message") or e.get("description") or e.get("detail") or ""
+            parts.append(f"[{code}] {msg}".strip() if code else str(msg))
+        else:
+            parts.append(str(e))
+    return "; ".join(p for p in parts if p)

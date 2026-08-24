@@ -19,7 +19,7 @@ from app.adapters.outbound.zepto_asn import build_zepto_asn_payload
 
 def _material(**kw):
     base = dict(item_code="FG00310", item_name="Let's Try Pudina MaKhana 57g",
-                ean_code="8906161390443", invntry_uom="EA")
+                ean_code="8906161390443", invntry_uom="EA", mrp=Decimal("160.00"))
     base.update(kw)
     return SimpleNamespace(**base)
 
@@ -86,7 +86,6 @@ class TestZeptoAsnContractShape:
         ident = payload["itemDetails"][0]["productIdentifier"]
 
         assert ident["buyerProductIdentifier"]["skuCode"] == "f0a0e480-uuid"
-        assert ident["buyerProductIdentifier"]["materialCode"] == "102597"
         assert ident["sellerProductIdentifier"]["itemCode"] == "FG00310"
         assert ident["sellerProductIdentifier"]["identifier"] == {
             "identifierType": "EAN", "identifierValue": "8906161390443",
@@ -130,3 +129,56 @@ class TestZeptoAsnContractShape:
             _session(), po, asn, invoice, partner, SimpleNamespace(name="LTF"))
 
         assert any("vendor code" in w for w in warnings)
+
+
+class TestContractFieldTable:
+    """
+    Fields the v12 contract's API Body table names that the first cut omitted, plus
+    the one it typed as Numeric that was being filled with a UUID.
+    """
+
+    def test_mrp_and_base_price_are_sent(self) -> None:
+        item = _build()[0]["itemDetails"][0]
+
+        assert item["mrp"] == 160
+        assert item["basePrice"] == 67.2
+
+    def test_material_code_omitted_when_not_known(self) -> None:
+        """
+        Typed Numeric. The SKU UUID is not a stand-in, and skuCode alone satisfies
+        "one of skuCode or materialCode has to be present".
+        """
+        payload, _ = _build()
+        buyer = payload["itemDetails"][0]["productIdentifier"]["buyerProductIdentifier"]
+
+        assert buyer["skuCode"] == "f0a0e480-uuid"
+        assert "materialCode" not in buyer or buyer["materialCode"] != "f0a0e480-uuid"
+
+
+class TestZeptoResponseHandling:
+    """
+    Response Codes: 2XX processed, 4XX parsing/missing-field errors where "retires
+    wont work", 5XX intermittent and retryable.
+    """
+
+    def test_errors_array_flattens(self) -> None:
+        from app.adapters.api.zepto_api import _errors_to_text
+
+        out = _errors_to_text([
+            {"code": "E01", "message": "No previous event found for PO Code: P1"},
+            {"message": "second problem"},
+        ])
+
+        assert "E01" in out
+        assert "No previous event found" in out
+        assert "second problem" in out
+
+    def test_plain_string_errors_survive(self) -> None:
+        from app.adapters.api.zepto_api import _errors_to_text
+
+        assert "boom" in _errors_to_text(["boom"])
+
+    def test_empty_errors_is_empty_text(self) -> None:
+        from app.adapters.api.zepto_api import _errors_to_text
+
+        assert _errors_to_text([]) == ""

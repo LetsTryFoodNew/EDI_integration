@@ -106,6 +106,7 @@ def build_zepto_asn_payload(
 
     items: list[dict[str, Any]] = []
     taxable_total = _ZERO
+    material_codes = _material_codes_from_raw(session, po)
 
     for seq, inv_line in enumerate(inv_lines, start=1):
         material = _material_for(session, inv_line.b1_item_code)
@@ -134,17 +135,27 @@ def build_zepto_asn_payload(
             )
 
         buyer_sku = getattr(po_line, "buyer_sku", None) or ""
+        buyer_ident: dict[str, Any] = {
+            "articleSequenceNumber": seq,
+            "skuCode": buyer_sku,
+            "articleName": getattr(po_line, "buyer_sku_description", None)
+            or inv_line.description
+            or "",
+        }
+        # "one of skuCode or materialCode has to be present. Preferably send skuCode."
+        # materialCode is typed Numeric, so the SKU UUID is not a stand-in for it --
+        # sending one put a UUID in a numeric field. Only include a real one.
+        material_code = material_codes.get(buyer_sku)
+        if material_code:
+            buyer_ident["materialCode"] = material_code
+
         item: dict[str, Any] = {
             "itemSequenceNumber": seq,
+            # Both are named in the contract's field table and were absent entirely.
+            "mrp": _num(_money(getattr(material, "mrp", None))),
+            "basePrice": _num(_money(inv_line.unit_price)),
             "productIdentifier": {
-                "buyerProductIdentifier": {
-                    "articleSequenceNumber": seq,
-                    "skuCode": buyer_sku,
-                    "materialCode": getattr(po_line, "buyer_material_code", None) or buyer_sku,
-                    "articleName": getattr(po_line, "buyer_sku_description", None)
-                    or inv_line.description
-                    or "",
-                },
+                "buyerProductIdentifier": buyer_ident,
                 "sellerProductIdentifier": {
                     "identifier": {
                         "identifierType": "EAN",
@@ -294,3 +305,29 @@ def _material_for(session: Session, item_code: str | None) -> Any:
     return session.execute(
         select(MaterialMaster).where(MaterialMaster.item_code == item_code)
     ).scalar_one_or_none()
+
+
+def _material_codes_from_raw(session: Session, po: Any) -> dict[str, str]:
+    """
+    Map Zepto skuCode -> materialCode from the PO Zepto sent us.
+
+    materialCode is typed Numeric in the contract and is not derivable from anything we
+    store, so it is read back off the originating message rather than guessed.
+    """
+    from sqlalchemy import select
+
+    from app.models.raw_messages import RawMessage
+
+    raw_id = getattr(po, "raw_message_id", None)
+    if raw_id is None:
+        return {}
+    raw = session.execute(
+        select(RawMessage).where(RawMessage.id == raw_id)
+    ).scalar_one_or_none()
+    payload = getattr(raw, "payload", None) or {}
+    out: dict[str, str] = {}
+    for li in payload.get("poLineItems") or []:
+        sku, code = li.get("skuCode"), li.get("materialCode")
+        if sku and code:
+            out[str(sku)] = str(code)
+    return out
