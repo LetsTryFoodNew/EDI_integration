@@ -568,3 +568,39 @@ class TestBuildB1ReturnPayload:
 
         with pytest.raises(ValueError, match="no lines"):
             _build_b1_return_payload(po, [line], partner)
+
+
+class TestAdapterDocTypeCapability:
+    """
+    The ACK trigger queued PO_ACK_855 for Zepto, whose API has no acknowledgement
+    endpoint. Each one retried five times and failed with "unsupported doc_type",
+    filling the outbound tab with work that could never succeed. Adapters now declare
+    what they can carry, and the trigger asks before queuing.
+    """
+
+    def test_zepto_carries_asn_only(self) -> None:
+        from app.adapters.outbound.zepto_outbound import ZeptoOutboundAdapter
+
+        adapter = ZeptoOutboundAdapter()
+
+        assert adapter.supports("ASN_856") is True
+        assert adapter.supports("PO_ACK_855") is False
+
+    def test_blinkit_carries_both(self) -> None:
+        """Blinkit exposes .../po/acknowledgement and .../asn."""
+        from app.adapters.outbound.blinkit_outbound import BlinkitOutboundAdapter
+
+        adapter = BlinkitOutboundAdapter()
+
+        assert adapter.supports("PO_ACK_855") is True
+        assert adapter.supports("ASN_856") is True
+
+    def test_email_is_unrestricted(self) -> None:
+        """An email can carry any document, so an empty set means no restriction."""
+        from app.adapters.outbound.email_outbound import EmailOutboundAdapter
+
+        adapter = EmailOutboundAdapter()
+
+        assert adapter.supports("PO_ACK_855") is True
+        assert adapter.supports("ASN_856") is True
+        assert adapter.supports("ANYTHING_ELSE") is True

@@ -26,6 +26,9 @@ log = structlog.get_logger(__name__)
 class BlinkitOutboundAdapter(BaseOutboundAdapter):
     """Transport adapter for Blinkit (webhook-push channel)."""
 
+    # Blinkit exposes both: webhook/public/v1/po/acknowledgement and .../v1/asn.
+    supported_doc_types = frozenset({"PO_ACK_855", "ASN_856"})
+
     @property
     def channel(self) -> str:
         return "WEBHOOK"

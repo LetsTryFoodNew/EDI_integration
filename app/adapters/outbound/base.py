@@ -50,6 +50,18 @@ class BaseOutboundAdapter(ABC):
         idempotency_key — EdiOutboundMessage.id as str; safe to retry with same key
         """
 
+    #: Document types this adapter can actually transmit.
+    #:
+    #: Declared rather than discovered, because the alternative is finding out at send
+    #: time: the ACK trigger queued PO_ACK_855 for Zepto, whose API has no
+    #: acknowledgement endpoint at all, and each one retried five times before failing.
+    #: A partner that cannot receive a document should never have one queued for it.
+    #: Empty means "no restriction" -- email can carry anything.
+    supported_doc_types: frozenset[str] = frozenset()
+
+    def supports(self, doc_type: str) -> bool:
+        return not self.supported_doc_types or doc_type in self.supported_doc_types
+
     @property
     @abstractmethod
     def channel(self) -> str:

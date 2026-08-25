@@ -23,6 +23,11 @@ log = structlog.get_logger(__name__)
 class ZeptoOutboundAdapter(BaseOutboundAdapter):
     """Transport adapter for Zepto (API-pull channel)."""
 
+    # ASN only. Zepto's contract (v12) exposes PO events, ASN create/cancel/list and
+    # PO amendment -- there is no acknowledgement endpoint. For Zepto the ASN *is* the
+    # acknowledgement: receiving one is what moves their PO to CONFIRMED.
+    supported_doc_types = frozenset({"ASN_856"})
+
     @property
     def channel(self) -> str:
         return "API"

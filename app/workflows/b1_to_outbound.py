@@ -88,6 +88,13 @@ def trigger_acks_for_confirmed_pos(queue: Queue) -> int:
             if not partner:
                 continue
 
+            # Do not queue an ACK for a partner that has nowhere to receive one. Zepto
+            # has no acknowledgement endpoint -- for them the ASN is the acknowledgement
+            # -- so every ACK created here retried five times and failed, filling the
+            # outbound tab with work that could never succeed.
+            if not _can_receive(partner, EdiDocType.PO_ACK_855.value):
+                continue
+
             payload = _build_ack_payload(po, partner)
             msg = EdiOutboundMessage(
                 po_id=po.id,
@@ -660,3 +667,24 @@ def _partner_email(partner: Any) -> str:
         cfg = partner.api_config or {}
         return str(cfg.get("ops_email", ""))
     return ""
+
+
+def _can_receive(partner: Any, doc_type: str) -> bool:
+    """
+    Whether this partner's outbound adapter can transmit `doc_type` at all.
+
+    A partner with no adapter cannot receive anything; that is already logged when a
+    send is attempted, so it is quietly false here rather than raising during a sweep.
+    """
+    from app.adapters.outbound.registry import (
+        UnsupportedOutboundPartnerError,
+        get_outbound_adapter,
+    )
+
+    try:
+        adapter = get_outbound_adapter(
+            partner_code=partner.code, source_channel=partner.source_channel
+        )
+    except UnsupportedOutboundPartnerError:
+        return False
+    return adapter.supports(doc_type)
