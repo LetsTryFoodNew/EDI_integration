@@ -693,3 +693,62 @@ class TestZeptoFetchParameters:
         warned = [c for c in mock_log.warning.call_args_list
                   if c.args and c.args[0] == "zepto.fetch.truncated"]
         assert warned, "hitting max_pages with hasNext=True must warn"
+
+
+class TestZeptoEventOrdering:
+    """
+    Zepto returns events newest-first, but parse_and_persist treats each arriving
+    document as a revision of the one before it. Consumed in API order the oldest event
+    ends up with the highest version and wins, and the newest is filed SUPERSEDED --
+    P368998 went live with its 22 Aug CreatePO active and both later UpdatePOs
+    superseded, which would have pushed two-day-old quantities to SAP.
+    """
+
+    def setup_method(self) -> None:
+        from app.adapters.api.zepto_api import ZeptoApiAdapter
+
+        self.adapter = ZeptoApiAdapter()
+        self.adapter._client_id = "cid"
+        self.adapter._client_secret = "secret"
+        self.adapter._zepto_base = "https://silkroute.test.zepto"
+
+    def _page(self, events):
+        return {"data": {"purchaseOrders": events, "hasNext": False}}
+
+    def test_events_are_returned_oldest_first(self) -> None:
+        import httpx
+        import respx
+
+        newest_first = [
+            {"eventId": "e3", "code": "P1", "eventType": "UpdatePO",
+             "timestamp": "2026-08-24T10:50:23Z"},
+            {"eventId": "e2", "code": "P1", "eventType": "UpdatePO",
+             "timestamp": "2026-08-24T09:13:51Z"},
+            {"eventId": "e1", "code": "P1", "eventType": "CreatePO",
+             "timestamp": "2026-08-22T05:30:43Z"},
+        ]
+        with respx.mock:
+            respx.get("https://silkroute.test.zepto/api/v1/external/po/events").mock(
+                return_value=httpx.Response(200, json=self._page(newest_first))
+            )
+            results = self.adapter.fetch_new_pos(since=None)
+
+        assert [r.external_id for r in results] == ["e1", "e2", "e3"], (
+            "the last document persisted must be the newest event"
+        )
+
+    def test_undated_events_sort_before_dated_ones(self) -> None:
+        """An undated event must never supersede one we can place in time."""
+        import httpx
+        import respx
+
+        with respx.mock:
+            respx.get("https://silkroute.test.zepto/api/v1/external/po/events").mock(
+                return_value=httpx.Response(200, json=self._page([
+                    {"eventId": "dated", "code": "P1", "timestamp": "2026-08-24T09:00:00Z"},
+                    {"eventId": "undated", "code": "P1"},
+                ]))
+            )
+            results = self.adapter.fetch_new_pos(since=None)
+
+        assert [r.external_id for r in results] == ["undated", "dated"]

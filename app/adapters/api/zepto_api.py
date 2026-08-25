@@ -204,6 +204,15 @@ class ZeptoApiAdapter(BaseApiAdapter):
                 days=days,
             )
 
+        # Oldest event first. Zepto returns newest-first, and parse_and_persist treats
+        # each arriving document as a revision of the one before it -- so consumed in
+        # API order, the *oldest* event ends up with the highest version and wins, while
+        # the newest is filed as SUPERSEDED. P368998 landed with its 22 Aug CreatePO
+        # active and both later UpdatePOs superseded, which would have pushed two-day-old
+        # quantities to SAP. Sorting here keeps arrival order and chronological order the
+        # same thing, which is what the versioning logic has always assumed.
+        results.sort(key=_event_sort_key)
+
         log.info(
             "zepto.fetch.done",
             total=len(results),
@@ -644,3 +653,16 @@ def _errors_to_text(errors: Any) -> str:
         else:
             parts.append(str(e))
     return "; ".join(p for p in parts if p)
+
+
+def _event_sort_key(fetched: FetchedPO) -> tuple[int, str]:
+    """
+    Sort key placing the oldest Zepto event first.
+
+    `timestamp` is ISO-8601 in UTC ("2026-08-24T10:50:23Z"), so lexical order is
+    chronological order and no parsing is needed. Events with no timestamp sort first
+    on the assumption they predate the ones that have it -- they cannot supersede a
+    dated event that way.
+    """
+    ts = str((fetched.payload or {}).get("timestamp") or "")
+    return (0 if not ts else 1, ts)
