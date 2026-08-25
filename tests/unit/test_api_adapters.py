@@ -631,3 +631,65 @@ class TestParseBlinkitError:
         })
         # Summary plus separator sit outside the cap applied to the joined details.
         assert len(_parse_blinkit_error(body)) <= _ERROR_MAX_CHARS + len("Validation failed | ")
+
+
+class TestZeptoFetchParameters:
+    """
+    The PO events feed is only correct with includeAllPoEvents=true.
+
+    The contract describes false as "just the latest PO snapshot", which reads like the
+    cheaper choice. In practice that view omits newly released POs and is not ordered
+    newest-first, so with any page cap they are unreachable: four POs released on
+    2026-08-25 were absent from 240 rows across 12 pages under false and first on page 1
+    under true. This pins the flag so it cannot be "optimised" back.
+    """
+
+    def setup_method(self) -> None:
+        from app.adapters.api.zepto_api import ZeptoApiAdapter
+
+        self.adapter = ZeptoApiAdapter()
+        self.adapter._client_id = "cid"
+        self.adapter._client_secret = "secret"
+        self.adapter._zepto_base = "https://silkroute.test.zepto"
+
+    def test_requests_the_full_event_stream(self) -> None:
+        import httpx
+        import respx
+
+        with respx.mock:
+            route = respx.get(
+                "https://silkroute.test.zepto/api/v1/external/po/events"
+            ).mock(
+                return_value=httpx.Response(
+                    200, json={"data": {"purchaseOrders": [], "hasNext": False}}
+                )
+            )
+            self.adapter.fetch_new_pos(since=None)
+
+        params = route.calls[0].request.url.params
+        assert params["includeAllPoEvents"] == "true"
+        assert params["includeLineItemDetails"] == "true"
+
+    def test_truncation_is_logged_not_silent(self) -> None:
+        """A cap reached quietly is how the previous two ingest bugs stayed hidden."""
+        import httpx
+        import respx
+
+        page = {
+            "data": {
+                "purchaseOrders": [
+                    {"eventId": "e1", "code": "P1", "purchaseOrderNumber": "P1"}
+                ],
+                "hasNext": True,
+            }
+        }
+        with respx.mock:
+            respx.get("https://silkroute.test.zepto/api/v1/external/po/events").mock(
+                return_value=httpx.Response(200, json=page)
+            )
+            with patch("app.adapters.api.zepto_api.log") as mock_log:
+                self.adapter.fetch_new_pos(since=None, max_pages=2)
+
+        warned = [c for c in mock_log.warning.call_args_list
+                  if c.args and c.args[0] == "zepto.fetch.truncated"]
+        assert warned, "hitting max_pages with hasNext=True must warn"

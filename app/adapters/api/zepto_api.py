@@ -193,6 +193,17 @@ class ZeptoApiAdapter(BaseApiAdapter):
                 break
             page += 1
 
+        if page > max_pages and page_data is not None and page_data.get("hasNext"):
+            # Stopping mid-stream is survivable -- we poll often and dedup on eventId --
+            # but it must not be silent. A cap reached quietly is how the last two
+            # ingest bugs stayed hidden.
+            log.warning(
+                "zepto.fetch.truncated",
+                max_pages=max_pages,
+                fetched=len(results),
+                days=days,
+            )
+
         log.info(
             "zepto.fetch.done",
             total=len(results),
@@ -407,7 +418,14 @@ class ZeptoApiAdapter(BaseApiAdapter):
             "days": min(days, 45),
             "pageSize": min(page_size, 20),
             "pageNumber": page,
-            "includeAllPoEvents": "false",
+            # MUST be "true". The contract calls false "just the latest PO snapshot",
+            # which sounds like the cheaper option and is what this sent for months --
+            # but that view omits newly released POs entirely and is not ordered
+            # newest-first, so with a page cap they were unreachable. Four POs released
+            # on 2026-08-25 were absent from 240 rows across 12 pages under false, and
+            # first on page 1 under true. We key raw_messages on eventId and supersede
+            # by version, so the event stream is the right feed regardless.
+            "includeAllPoEvents": "true",
             "includeLineItemDetails": "true",
         }
 
