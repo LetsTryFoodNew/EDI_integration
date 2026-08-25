@@ -123,3 +123,49 @@ class TestNotYetDispatched:
 
         assert result.success is True
         assert result.already_cancelled is True
+
+
+class TestCancellationIdempotencyKey:
+    """
+    The outbound message id was sent as the idempotency key for both the create and
+    the cancel, so Zepto matched the cancellation against the creation it had already
+    processed and refused it:
+
+        Past interaction found. Skipping duplicate event
+        (requestId: 5b35d5ed-92a0-4a3d-a78f-b2a2394043b4)
+
+    The contract says the key identifies a request, and create and cancel are two.
+    """
+
+    def test_key_differs_from_the_message_id_used_to_send(self) -> None:
+        from app.workflows.cancel_asn import _cancel_key
+
+        msg_id = uuid.uuid4()
+
+        assert _cancel_key(msg_id) != str(msg_id)
+
+    def test_key_is_stable_so_a_retried_cancel_stays_idempotent(self) -> None:
+        from app.workflows.cancel_asn import _cancel_key
+
+        msg_id = uuid.uuid4()
+
+        assert _cancel_key(msg_id) == _cancel_key(msg_id)
+
+    def test_different_messages_get_different_keys(self) -> None:
+        from app.workflows.cancel_asn import _cancel_key
+
+        assert _cancel_key(uuid.uuid4()) != _cancel_key(uuid.uuid4())
+
+    def test_cancel_is_called_with_the_derived_key(self) -> None:
+        from app.workflows.cancel_asn import _cancel_key, cancel_asn
+
+        asn, msg = _asn(), _msg()
+        db = _db(asn, SimpleNamespace(code="ZEPTO"), msg)
+
+        with patch("app.adapters.api.zepto_api.ZeptoApiAdapter") as adapter:
+            adapter.return_value.cancel_asn.return_value = {"success": True}
+            cancel_asn(db, asn.id, cancelled_by="ops@x.com")
+
+        sent_key = adapter.return_value.cancel_asn.call_args.kwargs["idempotency_key"]
+        assert sent_key == _cancel_key(msg.id)
+        assert sent_key != str(msg.id)

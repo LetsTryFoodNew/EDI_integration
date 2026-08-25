@@ -118,7 +118,7 @@ def cancel_asn(db: Session, asn_id: uuid.UUID, *, cancelled_by: str) -> CancelRe
             ),
         )
 
-    result = _call_partner(code, partner_ref, str(msg.id))
+    result = _call_partner(code, partner_ref, _cancel_key(msg.id))
     if not result.get("success"):
         return CancelResult(
             success=False,
@@ -144,6 +144,25 @@ def cancel_asn(db: Session, asn_id: uuid.UUID, *, cancelled_by: str) -> CancelRe
         partner_code=code,
         partner_reference=partner_ref,
     )
+
+
+def _cancel_key(message_id: Any) -> str:
+    """
+    Idempotency key for the cancellation, distinct from the one used to create.
+
+    The outbound message id was being sent for both, and Zepto matched the cancel
+    against the create it had already processed:
+
+        Past interaction found. Skipping duplicate event
+        (requestId: 5b35d5ed-92a0-4a3d-a78f-b2a2394043b4)
+
+    The contract says the key identifies a *request*, and create and cancel are two.
+    Derived rather than random so a retried cancellation is still idempotent -- the
+    point of the header -- while never colliding with the send.
+    """
+    import uuid
+
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"asn-cancel:{message_id}"))
 
 
 def _call_partner(code: str, partner_reference: str, idempotency_key: str) -> dict[str, Any]:
