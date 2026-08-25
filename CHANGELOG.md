@@ -1,5 +1,50 @@
 # Changelog
 
+## Zepto's expiry notices were being filed as purchase orders (2026-08-25)
+
+A poll took the Zepto PO count from 475 to 503 on a day Zepto had raised four POs.
+The suspicion was the 15-day minimum lookback, but that window is fine: it only
+governs how much history we *ask* for, and `raw_messages` is unique on Zepto's
+`eventId`, so re-requesting the overlap costs nothing.
+
+What the wider window actually surfaced was Zepto's housekeeping. When a PO passes
+its `expiryDate` Zepto emits an `UpdatePO` carrying `status: EXPIRED`, stamped
+18:30:00Z — midnight IST, a nightly sweep. Those events arrive in the same feed as
+real POs, and reach back to orders raised long before we started polling: 210 of
+them landed stamped 16 Aug alone. Two defects between the parser and the database
+turned each one into work for ops.
+
+`_save_canonical_po` hardcoded `po_status=PARSED`. `ZeptoParser` had already worked
+out that an EXPIRED PO is CANCELLED, and `validate_po` has refused to touch a
+CANCELLED PO since 2026-07-28 — but the persistence layer sitting between them threw
+the verdict away, so the guard never fired once. 533 dead Zepto POs were validated
+anyway and queued as exceptions asking ops to map SKUs for goods nobody would ship.
+
+Worse, an expiry for a PO number we had never held created a **new** purchase order
+at version 1, because `_find_existing_po` found nothing to supersede. 303 of the 540
+Zepto POs on the server existed for no other reason: born already dead, from notices
+about orders we never received. That is what made four real POs read as twenty-eight.
+
+- `_persisted_status()` honours a parser's terminal status and ignores anything
+  else, since `EDI850.po_status` defaults to RECEIVED and most parsers never set it
+  — a non-terminal value is silence, not an opinion.
+- `_is_orphan_terminal_notice()` skips a terminal document for a PO number we have
+  never held: `parse_status = "SKIPPED"`, no PO row. An expiry for a PO we *do* hold
+  still processes normally — closing out a live order is the point of the notice.
+- Validation is no longer enqueued for a PO that arrives already terminal.
+- The inbox shows SKIPPED as "Not applicable" rather than falling through to
+  "Pending", which implied a backlog that was never going to clear.
+
+`scripts/purge_orphan_expiry_pos.py` retires what was already stored, deciding
+terminal-ness by re-running the partner's own parser rather than hardcoding any
+partner's status vocabulary. On the server: 301 orphans soft-deleted, 2 kept because
+they carry invoices. Zepto is down from 545 rows to 283, and no other partner was
+affected.
+
+What remains is real: 104 CreatePO/RELEASED events arrived today for vendor KK-1102,
+all stamped between 08:13:12Z and 08:13:14Z. Zepto's QA environment generates POs in
+bulk; that is their data, not our double-counting.
+
 ## Blinkit rejected our ASN because Go will not take 360.0 as an int (2026-08-22)
 
 First real contact with Blinkit's API from the whitelisted server, and it refused

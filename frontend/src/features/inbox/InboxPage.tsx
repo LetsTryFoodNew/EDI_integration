@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Mail, Paperclip, CheckCircle2, Clock, AlertCircle, Inbox, RefreshCw, Search, X } from "lucide-react";
+import { Mail, Paperclip, CheckCircle2, Clock, AlertCircle, MinusCircle, Inbox, RefreshCw, Search, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -27,6 +27,15 @@ function ParseStatusBadge({ status }: { status: string }) {
       <Badge variant="destructive" className="text-xs gap-1">
         <AlertCircle className="h-3 w-3" />
         Failed
+      </Badge>
+    );
+  // A partner notice about a PO we never held (e.g. Zepto expiring someone else's
+  // order). Deliberately not parsed — showing it as "Pending" implied a backlog.
+  if (status === "SKIPPED")
+    return (
+      <Badge variant="outline" className="text-xs gap-1">
+        <MinusCircle className="h-3 w-3" />
+        Not applicable
       </Badge>
     );
   return (

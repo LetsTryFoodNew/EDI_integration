@@ -4,7 +4,12 @@ Parse-and-persist workflow — phase 2 of the processing pipeline:
 
 On success:
   raw_message.parse_status = "SUCCESS", raw_message.processed = True
-  EdiPurchaseOrder.po_status = PARSED
+  EdiPurchaseOrder.po_status = PARSED, or the parser's own terminal status when it
+  reports the partner has already killed the order (Zepto EXPIRED → CANCELLED)
+
+Skipped:
+  A terminal-status document for a PO number we have never held is a notice about
+  someone else's order, not an order. raw_message.parse_status = "SKIPPED", no PO row.
 
 On failure:
   EdiValidationIssue with code E000_PARSE_FAILED written to DB
@@ -23,8 +28,9 @@ from typing import Any
 
 import structlog
 
-log = structlog.get_logger(__name__)
+from app.models._enums import PoStatus
 
+log = structlog.get_logger(__name__)
 
 @dataclass
 class PersistResult:
@@ -79,6 +85,22 @@ def parse_and_persist(raw_message_id: uuid.UUID) -> PersistResult:
 
         result = _run_parser(raw, partner)
 
+        if result.success and result.doc and _is_orphan_terminal_notice(session, result.doc, partner):
+            raw.parse_status = "SKIPPED"
+            raw.processed = True
+            session.commit()
+            log.info(
+                "parse.orphan_terminal_notice",
+                partner=partner.code,
+                po_number=result.doc.buyer_po_number,
+                status=str(result.doc.po_status),
+            )
+            return PersistResult(
+                success=True,
+                partner_code=partner.code,
+                buyer_po_number=result.doc.buyer_po_number,
+            )
+
         if result.success and result.doc:
             try:
                 po = _save_canonical_po(session, result.doc, raw, partner)
@@ -92,7 +114,8 @@ def parse_and_persist(raw_message_id: uuid.UUID) -> PersistResult:
                     po_id=str(po.id),
                     parser=result.parser_name,
                 )
-                _enqueue_validate(po.id)
+                if po.po_status not in _TERMINAL_PO_STATUSES:
+                    _enqueue_validate(po.id)
                 return PersistResult(
                     success=True,
                     po_id=po.id,
@@ -257,6 +280,56 @@ def _llm_fallback_enabled(partner: Any) -> bool:
 
 # ── DB persistence ────────────────────────────────────────────────────────────
 
+# A PO in one of these is over: nothing further is validated, pushed or shipped.
+_TERMINAL_PO_STATUSES: frozenset[PoStatus] = frozenset({PoStatus.CANCELLED, PoStatus.SUPERSEDED})
+
+
+def _persisted_status(doc: Any) -> PoStatus:
+    """
+    The status a freshly-parsed document should be stored with.
+
+    This used to be hardcoded to PARSED, which silently threw away the one thing a
+    parser can tell us that nothing downstream can work out for itself: that the
+    partner has already declared this order dead. ZeptoParser sets CANCELLED for an
+    `EXPIRED` PO, validate_po refuses to touch a CANCELLED PO -- and in between, this
+    function overwrote it with PARSED, so 533 expired Zepto POs were validated anyway
+    and landed in the exceptions queue asking ops to map SKUs for orders nobody would
+    ever ship.
+
+    Only terminal statuses are honoured. Everything else becomes PARSED regardless of
+    what the doc carries, because EDI850.po_status defaults to RECEIVED and most
+    parsers never set it -- a doc's non-terminal status is silence, not an opinion.
+    """
+    status = getattr(doc, "po_status", None)
+    return status if status in _TERMINAL_PO_STATUSES else PoStatus.PARSED
+
+
+def _is_orphan_terminal_notice(session: Any, doc: Any, partner: Any) -> bool:
+    """
+    True when this document is a partner telling us an order we never received is over.
+
+    Zepto emits an `UpdatePO` event with `status: EXPIRED` when a PO passes its
+    expiryDate -- a nightly sweep, stamped 18:30:00Z (midnight IST). Those events sit
+    in the same feed as real POs, and the poll window reaches back far enough (up to
+    Zepto's 45-day cap) to pick up expiries for orders raised long before we started
+    polling, or for a vendor's whole back-catalogue in one go: 210 of them arrived
+    stamped 16 Aug alone.
+
+    Each one used to become a *new purchase order* at version 1, because
+    `_find_existing_po` found nothing to supersede. 303 of the 540 Zepto POs on the
+    server exist for no other reason -- born already dead, from a notice about an
+    order we had never held. That is what made a day with four real POs read as
+    twenty-eight.
+
+    An expiry notice against a PO we *do* hold is different and still processed
+    normally: it supersedes the live version and closes it out, which is the whole
+    point of receiving it.
+    """
+    if doc.po_status not in _TERMINAL_PO_STATUSES:
+        return False
+    return _find_existing_po(session, partner.id, doc.buyer_po_number) is None
+
+
 _REVISION_WINDOW_DAYS = 25  # same PO number within this window = revision of the same PO
 
 
@@ -273,7 +346,6 @@ def _resolve_version(session: Any, doc: Any, raw: Any, partner: Any) -> int:
     """
     from datetime import UTC, datetime, timedelta
 
-    from app.models._enums import PoStatus
     from app.models.edi_po import EdiPoStatusHistory
 
     existing = _find_existing_po(session, partner.id, doc.buyer_po_number)
@@ -284,7 +356,7 @@ def _resolve_version(session: Any, doc: Any, raw: Any, partner: Any) -> int:
     cutoff = datetime.now(UTC) - timedelta(days=_REVISION_WINDOW_DAYS)
     is_revision = existing.created_at >= cutoff
 
-    if is_revision and existing.po_status not in (PoStatus.CANCELLED, PoStatus.SUPERSEDED):
+    if is_revision and existing.po_status not in _TERMINAL_PO_STATUSES:
         old_status = existing.po_status
         existing.po_status = PoStatus.SUPERSEDED
         session.add(EdiPoStatusHistory(
@@ -308,7 +380,6 @@ def _save_canonical_po(session: Any, doc: Any, raw: Any, partner: Any) -> Any:
     """Write a successfully-parsed EDI850 to edi_purchase_orders + lines."""
     from sqlalchemy import select
 
-    from app.models._enums import PoStatus
     from app.models.edi_po import EdiPoLineItem, EdiPurchaseOrder
     from app.models.master_data import SellerEntity
 
@@ -329,7 +400,7 @@ def _save_canonical_po(session: Any, doc: Any, raw: Any, partner: Any) -> Any:
         buyer_po_number=doc.buyer_po_number,
         buyer_po_date=doc.buyer_po_date,
         version=version,
-        po_status=PoStatus.PARSED,
+        po_status=_persisted_status(doc),
         ship_to_code=doc.ship_to.warehouse_code if doc.ship_to else None,
         ship_to_name=doc.ship_to.name if doc.ship_to else None,
         ship_to_address=doc.ship_to.model_dump(exclude_none=True) if doc.ship_to else None,
@@ -383,7 +454,7 @@ def _save_failed_po(
     """
     from sqlalchemy import select
 
-    from app.models._enums import PoStatus, ValidationStatus
+    from app.models._enums import ValidationStatus
     from app.models.edi_po import EdiPurchaseOrder, EdiValidationIssue
     from app.models.master_data import SellerEntity
 
