@@ -197,7 +197,12 @@ class TestZeptoApiAdapter:
         import respx
         import httpx
 
-        asn_response = {"data": {"data": {"asnNumber": "ASN-12345"}}}
+        # The real shape, per contract v12 §2.a and confirmed against QA:
+        #   {"errors": [], "data": {"asnNumber": "MI399MEA002F4"}}
+        # This fixture used to be double-nested ({"data": {"data": {...}}}), which no
+        # Zepto endpoint returns. It matched the old lookup rather than the contract, so
+        # it went green while live ASNs were being recorded as failures.
+        asn_response = {"errors": [], "data": {"asnNumber": "ASN-12345"}}
         asn_url = "https://silkroute.test.zepto/api/v1/external/asn"
 
         with respx.mock:

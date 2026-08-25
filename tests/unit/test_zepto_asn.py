@@ -182,3 +182,58 @@ class TestZeptoResponseHandling:
         from app.adapters.api.zepto_api import _errors_to_text
 
         assert _errors_to_text([]) == ""
+
+
+class TestAsnAckEnvelope:
+    """
+    Zepto accepted ASN MI399MEA002F4 and the adapter reported "no asnNumber returned",
+    because it read the response through _unwrap -- which hands back the *contents* of
+    "data" and drops the sibling "errors" array. asnNumber then sits one level
+    shallower than the lookup expected.
+
+    A success read as a failure is the mirror of the Blinkit bug: there a rejection was
+    recorded as delivered, here a delivery was recorded as refused. Both come from
+    trusting one shape of one field.
+    """
+
+    def test_documented_shape(self) -> None:
+        from app.adapters.api.zepto_api import _asn_ack
+
+        errors, asn = _asn_ack({"errors": [], "data": {"asnNumber": "MI399MEA002F4"}})
+
+        assert errors == []
+        assert asn == "MI399MEA002F4"
+
+    def test_already_unwrapped_shape(self) -> None:
+        from app.adapters.api.zepto_api import _asn_ack
+
+        _errors, asn = _asn_ack({"asnNumber": "MI399MEA002F4"})
+
+        assert asn == "MI399MEA002F4"
+
+    def test_proxy_envelope(self) -> None:
+        from app.adapters.api.zepto_api import _asn_ack
+
+        _errors, asn = _asn_ack(
+            {"proxied": True, "status_code": 200,
+             "data": {"errors": [], "data": {"asnNumber": "JAI005MEA00972"}}}
+        )
+
+        assert asn == "JAI005MEA00972"
+
+    def test_errors_survive_alongside_data(self) -> None:
+        from app.adapters.api.zepto_api import _asn_ack
+
+        errors, asn = _asn_ack({
+            "errors": [{"code": 400, "error": "PO is not in RELEASED / CONFIRMED status"}],
+            "data": None,
+        })
+
+        assert asn is None
+        assert errors and "RELEASED" in str(errors[0])
+
+    def test_non_dict_body_is_survivable(self) -> None:
+        from app.adapters.api.zepto_api import _asn_ack
+
+        assert _asn_ack(None) == ([], None)
+        assert _asn_ack("boom") == ([], None)

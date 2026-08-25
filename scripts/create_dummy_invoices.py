@@ -53,12 +53,13 @@ def _q(value: Any) -> Decimal:
     return Decimal(str(value or 0)).quantize(_TWO_DP, ROUND_HALF_UP)
 
 
-def _pick_po(session: Any, partner_code: str) -> Any:
+def _pick_po(session: Any, partner_code: str, po_number: str | None = None) -> Any:
     """
-    Newest PO for this partner that has line items and no dummy invoice yet.
+    Pick the PO to invoice.
 
-    Ordering by created_at puts the most recently ingested PO first, which is the one
-    a tester is most likely to recognise in the UI.
+    With `po_number`, that exact PO -- needed once a partner has hundreds of POs and
+    the one you want to test is not the newest. Without it, the newest PO for this
+    partner that has line items, which is the one a tester recognises in the UI.
     """
     from sqlalchemy import select
 
@@ -78,8 +79,14 @@ def _pick_po(session: Any, partner_code: str) -> Any:
             EdiPurchaseOrder.deleted_at.is_(None),
         )
         .order_by(EdiPurchaseOrder.created_at.desc())
-        .limit(50)
+        .limit(50 if not po_number else 2000)
     ).scalars().all()
+
+    if po_number:
+        for po in pos:
+            if po.buyer_po_number == po_number and po.line_items:
+                return partner, po
+        return partner, None
 
     for po in pos:
         if po.line_items:
@@ -243,6 +250,8 @@ def main() -> int:
     ap.add_argument("--json-only", metavar="DIR",
                     help="write payloads as .json for Postman and exit")
     ap.add_argument("--cleanup", action="store_true", help="delete every DUMMY- invoice")
+    ap.add_argument("--po", metavar="PO_NUMBER",
+                    help="invoice this exact PO instead of the newest one")
     args = ap.parse_args()
 
     from app.schemas.api import InvoicePush
@@ -261,12 +270,13 @@ def main() -> int:
             out_dir.mkdir(parents=True, exist_ok=True)
 
         for idx, code in enumerate(codes, start=1):
-            partner, po = _pick_po(session, code)
+            partner, po = _pick_po(session, code, args.po)
             if partner is None:
                 print(f"{code:8} partner not found — skipped")
                 continue
             if po is None:
-                print(f"{code:8} no PO with line items — skipped")
+                hint = f" matching --po {args.po}" if args.po else ""
+                print(f"{code:8} no PO with line items{hint} — skipped")
                 continue
 
             payload = _build_payload(partner, po, seq=int(f"{stamp[-4:]}{idx}"))

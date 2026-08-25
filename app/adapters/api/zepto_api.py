@@ -258,16 +258,19 @@ class ZeptoApiAdapter(BaseApiAdapter):
                     return {"success": False, **proxy_err}
 
                 resp.raise_for_status()
-                data = _unwrap(body)
                 po_number = payload.get("purchaseOrderDetails", {}).get("purchaseOrderNumber")
 
-                # A 2xx means "processed", not "accepted". The contract's response
-                # structure carries an `errors` array alongside `data`, and a body with
-                # errors and no asnNumber is a refusal however healthy the status line
-                # looks. Reporting that as sent would mark a shipment notice delivered
-                # that Zepto never recorded.
-                errors = data.get("errors") or []
-                asn_number = (data.get("data") or {}).get("asnNumber")
+                # Read the envelope directly rather than through _unwrap. _unwrap returns
+                # the *contents* of "data" and drops its sibling "errors" entirely, so
+                # asnNumber sits one level shallower than it looks and the errors array
+                # is gone. Zepto accepted ASN MI399MEA002F4 and this read it as
+                # "no asnNumber returned".
+                #
+                # A 2xx still means "processed", not "accepted": the contract pairs an
+                # errors array with data, so errors present is a refusal however healthy
+                # the status line looks.
+                errors, asn_number = _asn_ack(body)
+                data = _unwrap(body)
                 if errors or not asn_number:
                     detail = _errors_to_text(errors) or "no asnNumber returned"
                     log.error(
@@ -275,6 +278,10 @@ class ZeptoApiAdapter(BaseApiAdapter):
                         po_number=po_number,
                         status_code=resp.status_code,
                         error=detail,
+                        # The whole body, because "no asnNumber returned" says nothing
+                        # about why. Discarding the payload on an unexpected 2xx is the
+                        # same mistake that made Blinkit's rejections unreadable.
+                        body=resp.text[:1000],
                     )
                     return {
                         "success": False,
@@ -369,7 +376,7 @@ class ZeptoApiAdapter(BaseApiAdapter):
 
                 resp.raise_for_status()
                 data = _unwrap(body) if body else {}
-                errors = data.get("errors") or []
+                errors, _ = _asn_ack(body)
                 if errors:
                     detail = _errors_to_text(errors)
                     log.error(
@@ -666,3 +673,27 @@ def _event_sort_key(fetched: FetchedPO) -> tuple[int, str]:
     """
     ts = str((fetched.payload or {}).get("timestamp") or "")
     return (0 if not ts else 1, ts)
+
+
+def _asn_ack(raw: Any) -> tuple[list[Any], str | None]:
+    """
+    Pull ``(errors, asnNumber)`` out of an ASN response envelope.
+
+    Handles the proxy wrapper and both nestings, because the two are easy to confuse:
+    the documented body is ``{"errors": [], "data": {"asnNumber": "..."}}``, while
+    _unwrap hands back the inner dict alone. Looking in only one place is what made a
+    successful ASN read as a failure.
+    """
+    envelope = raw if isinstance(raw, dict) else {}
+    if envelope.get("proxied"):
+        inner_env = envelope.get("data")
+        envelope = inner_env if isinstance(inner_env, dict) else {}
+
+    errors = envelope.get("errors") or []
+    if not isinstance(errors, list):
+        errors = [errors]
+
+    inner = envelope.get("data")
+    inner = inner if isinstance(inner, dict) else {}
+    asn_number = inner.get("asnNumber") or envelope.get("asnNumber")
+    return errors, (str(asn_number) if asn_number else None)
