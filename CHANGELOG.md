@@ -1,5 +1,52 @@
 # Changelog
 
+## Manual Inbox can now take a purchase order (2026-08-26)
+
+LOTS Wholesale send orders by phone and paper; Reliance/JioMart publish theirs on a
+portal whose scraper is Phase 9 work. Both partners sat in the Manual Inbox showing
+"No documents yet — coming in the next phase". They can now be keyed in.
+
+A keyed-in order is stored as a raw_message exactly like a webhook body and handed to
+the same pipeline: parse, validate, SKU mapping, SAP push, 855/856 outbound. Nothing
+downstream can tell it from a Blinkit webhook, which is the point — manual partners
+get the whole chain without a line of partner-specific code.
+
+**What the operator types, and what is derived.** They type quantity, unit price and
+one GST rate per line. Taxable amounts, the CGST/SGST-vs-IGST split, line totals and
+header totals are computed in `ManualEntryParser`. A hand-typed total that disagrees
+with its own lines by a rupee trips `TotalReconciliationRule` and parks the order in
+the exceptions queue, so deriving means the document reconciles by construction and
+there are fewer boxes to get wrong.
+
+**The split follows place of supply**, per `app/utils/gst.py` and CLAUDE.md §8: seller
+state against ship-to state, GSTIN prefix preferred over a typed state name because
+the prefix is unambiguous. When either state is unknown this refuses rather than
+guessing — silently defaulting to intra-state would put CGST+SGST on an inter-state
+order and the error would surface at the retailer's reconciliation. The form and the
+route both check it, so the message lands on the field rather than as a parse failure
+minutes later.
+
+CGST and SGST are each computed from the halved rate rather than by halving the
+combined amount. On a 167.15 total, halving gives 83.58 and 83.57, and a CGST that
+differs from its SGST is queried at filing. Equal halves can sum to a paisa under the
+combined figure, which is safe here only because every total downstream is a sum of
+these line amounts — nothing computes tax a second way to disagree with.
+
+- `app/parsers/manual_parser.py` — `ManualEntryParser`, routed on the payload marker
+  rather than the partner code, so one parser covers every manual partner and a new
+  one needs no code. A partner that also has a wire still goes to its own parser.
+- `POST /api/manual-inbox/entries` — refuses a partner that receives orders over a
+  wire (keying one in would double an order that also arrives on its own), and
+  refuses a repeated PO number, which on hand-keyed input is far more likely to be a
+  double submission than a revision. `replace_existing` files it as one, and the
+  existing versioning supersedes the previous.
+- The operator's keystrokes are stored verbatim; the seller's GSTIN and state are
+  copied in at entry rather than read at parse time, so editing the seller entity
+  later cannot silently re-tax an old order.
+- New PO form on the Manual Inbox page: header, ship-to, an add/remove line table and
+  a live total for checking against the paper before submitting. The preview is
+  labelled indicative — the saved figures come from the server.
+
 ## Zepto's expiry notices were being filed as purchase orders (2026-08-25)
 
 A poll took the Zepto PO count from 475 to 503 on a day Zepto had raised four POs.

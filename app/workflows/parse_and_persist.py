@@ -239,7 +239,16 @@ def _find_po_for_raw_message(session: Any, raw_message_id: uuid.UUID) -> Any:
 # ── Parser selection ──────────────────────────────────────────────────────────
 
 def _run_parser(raw: Any, partner: Any) -> Any:
+    from app.parsers.manual_parser import ManualEntryParser, is_manual_entry
     from app.parsers.registry import get_parser
+
+    # A hand-keyed PO is routed on its payload, not its partner. Every manual partner
+    # produces the same shape, so one parser covers all of them and onboarding a new
+    # one needs no code — but a partner that also has a wire (a Blinkit order phoned
+    # in during an outage, say) must not be handed to its webhook parser.
+    if is_manual_entry(raw):
+        log.debug("parse.using_parser", parser="ManualEntryParser", partner=partner.code)
+        return ManualEntryParser().parse(raw)
 
     parser = get_parser(partner.code)
     if parser and parser.can_parse(raw):

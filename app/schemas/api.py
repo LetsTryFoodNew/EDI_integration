@@ -1409,3 +1409,80 @@ class SapPreviewResponse(BaseModel):
     endpoint: str
     payload: dict[str, Any]
     warnings: list[str] = []
+
+
+# ── Manual PO entry ───────────────────────────────────────────────────────────
+
+class ManualPoLineEntry(BaseModel):
+    """
+    One line as the operator keys it.
+
+    Deliberately short. They type what is printed on the paper PO — SKU, quantity,
+    price, GST rate — and the parser derives taxable amount, the CGST/SGST-vs-IGST
+    split and the line total. Asking for those too would mean a hand-typed total that
+    disagrees with its own lines by a rupee, which trips TotalReconciliationRule and
+    parks the order in the exceptions queue.
+    """
+    buyer_sku: str = Field(min_length=1, max_length=100)
+    ordered_qty: Decimal = Field(gt=0)
+    unit_price: Decimal = Field(ge=0)
+    gst_rate: Decimal = Field(default=Decimal("0"), ge=0, le=100)
+
+    description: str | None = Field(default=None, max_length=500)
+    hsn_code: str | None = Field(default=None, max_length=10)
+    buyer_uom: str | None = Field(default=None, max_length=20)
+    discount_pct: Decimal | None = Field(default=None, ge=0, le=100)
+    cess_rate: Decimal | None = Field(default=None, ge=0, le=100)
+
+    model_config = {"extra": "forbid"}
+
+
+class ManualShipTo(BaseModel):
+    """
+    Where the goods go.
+
+    Either `gstin` or `state` has to be usable, because the two together with the
+    seller's state decide CGST+SGST vs IGST. The route rejects an entry with neither
+    rather than letting the parser guess.
+    """
+    warehouse_code: str | None = Field(default=None, max_length=100)
+    name: str | None = Field(default=None, max_length=500)
+    line1: str | None = Field(default=None, max_length=500)
+    line2: str | None = Field(default=None, max_length=500)
+    city: str | None = Field(default=None, max_length=100)
+    state: str | None = Field(default=None, max_length=100)
+    pincode: str | None = Field(default=None, max_length=10)
+    gstin: str | None = Field(default=None, max_length=15)
+    country: str = "India"
+
+    model_config = {"extra": "forbid"}
+
+
+class ManualPoEntryRequest(BaseModel):
+    """A purchase order typed in by ops for a partner with no integration."""
+    partner_code: str = Field(min_length=1, max_length=50)
+    buyer_po_number: str = Field(min_length=1, max_length=200)
+    line_items: list[ManualPoLineEntry] = Field(min_length=1, max_length=500)
+
+    buyer_po_date: date | None = None
+    requested_delivery_date: date | None = None
+    buyer_name: str | None = Field(default=None, max_length=500)
+    buyer_gstin: str | None = Field(default=None, max_length=15)
+    ship_to: ManualShipTo = Field(default_factory=ManualShipTo)
+    currency: str = Field(default="INR", max_length=3)
+    notes: str | None = Field(default=None, max_length=2000)
+
+    # A hand-keyed PO number that already exists is far more likely to be a double
+    # submission than a genuine revision, so it is refused unless this says otherwise.
+    replace_existing: bool = False
+
+    model_config = {"extra": "forbid"}
+
+
+class ManualPoEntryResponse(BaseModel):
+    raw_message_id: uuid.UUID
+    partner_code: str
+    buyer_po_number: str
+    revision: int
+    queued: bool
+    message: str

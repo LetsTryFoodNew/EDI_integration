@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import {
   ClipboardEdit,
@@ -8,8 +8,11 @@ import {
   CheckCircle2,
   Clock,
   AlertCircle,
+  MinusCircle,
+  Plus,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { cn } from "@/lib/utils";
@@ -19,6 +22,7 @@ import { fetchInboxMessages } from "../inbox/api";
 import type { InboxMessageItem } from "../inbox/api";
 import { fetchManualPartners } from "./api";
 import type { ManualPartner } from "./api";
+import ManualPoForm from "./components/ManualPoForm";
 
 const PAGE_SIZE = 50;
 
@@ -35,6 +39,13 @@ function ParseStatusBadge({ status }: { status: string }) {
       <Badge variant="destructive" className="text-xs gap-1">
         <AlertCircle className="h-3 w-3" />
         Failed
+      </Badge>
+    );
+  if (status === "SKIPPED")
+    return (
+      <Badge variant="outline" className="text-xs gap-1">
+        <MinusCircle className="h-3 w-3" />
+        Not applicable
       </Badge>
     );
   return (
@@ -118,8 +129,10 @@ function MessageRow({ msg, onClick }: { msg: InboxMessageItem; onClick: () => vo
 
 export default function ManualInboxPage() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [selectedCode, setSelectedCode] = useState<string | null>(null);
   const [page, setPage] = useState(1);
+  const [entryOpen, setEntryOpen] = useState(false);
 
   const {
     data: partners,
@@ -199,9 +212,15 @@ export default function ManualInboxPage() {
                   {messages ? `${messages.total} documents` : "…"}
                 </p>
               </div>
-              <Badge variant="outline" className="text-xs shrink-0">
-                {selected.source_channel}
-              </Badge>
+              <div className="flex items-center gap-2 shrink-0">
+                <Badge variant="outline" className="text-xs">
+                  {selected.source_channel}
+                </Badge>
+                <Button size="sm" onClick={() => setEntryOpen(true)}>
+                  <Plus className="h-3.5 w-3.5 mr-1" />
+                  New PO
+                </Button>
+              </div>
             </div>
 
             <div className="flex-1 overflow-y-auto">
@@ -212,15 +231,21 @@ export default function ManualInboxPage() {
                 </div>
               ) : !messages?.items.length ? (
                 <div className="flex-1 flex items-center justify-center py-16">
-                  <EmptyState
-                    icon={<ClipboardEdit className="h-10 w-10" />}
-                    title="No documents yet"
-                    description={
-                      selected.source_channel === "PORTAL"
-                        ? "Portal scraping for this partner is not built yet — its orders are handled manually today. Manual sales-order creation is coming in the next phase."
-                        : "Orders for this partner are entered by hand. Manual sales-order creation is coming in the next phase."
-                    }
-                  />
+                  <div className="flex flex-col items-center gap-4">
+                    <EmptyState
+                      icon={<ClipboardEdit className="h-10 w-10" />}
+                      title="No documents yet"
+                      description={
+                        selected.source_channel === "PORTAL"
+                          ? "Portal scraping for this partner is not built yet, so its orders are keyed in. Once entered they are validated, mapped and pushed to SAP like any other."
+                          : "Orders for this partner arrive by phone or paper. Key one in and it runs the same pipeline as every other partner."
+                      }
+                    />
+                    <Button onClick={() => setEntryOpen(true)}>
+                      <Plus className="h-4 w-4 mr-1" />
+                      Enter a purchase order
+                    </Button>
+                  </div>
                 </div>
               ) : (
                 messages.items.map((m) => (
@@ -253,6 +278,20 @@ export default function ManualInboxPage() {
                   ›
                 </button>
               </div>
+            )}
+
+            {entryOpen && (
+              <ManualPoForm
+                partnerCode={selected.code}
+                partnerName={selected.name}
+                open={entryOpen}
+                onClose={() => setEntryOpen(false)}
+                onCreated={() => {
+                  // The row appears as soon as the raw message is saved; its parse
+                  // status settles a moment later, which the 60s refetch picks up.
+                  queryClient.invalidateQueries({ queryKey: ["manual-inbox"] });
+                }}
+              />
             )}
           </>
         )}
