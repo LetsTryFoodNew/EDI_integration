@@ -112,3 +112,44 @@ class TestBody:
         payload, _ = build(body={**BODY, "line_items": []})
         assert payload["subject"]
         assert "0 line(s)" in payload["body_text"]
+
+
+class TestPartnerEmailLookup:
+    """
+    Where outbound mail is addressed.
+
+    `_partner_email` read only `api_config["ops_email"]` and ignored
+    `trading_partners.email_address` — the first-class column Master Data edits. Every
+    855 and every email 856 was therefore built with `to: ""`. Swiggy's ACK for
+    CMMPO17234 had been retrying since creation, with Gmail answering "Recipient
+    address required". That one failed loudly; an adapter less strict about an empty
+    To header would have reported the ACK delivered.
+    """
+
+    @staticmethod
+    def _lookup(partner):
+        from app.workflows.b1_to_outbound import _partner_email
+
+        return _partner_email(partner)
+
+    def test_uses_the_email_address_column(self) -> None:
+        partner = SimpleNamespace(email_address="instamart.vendors@swiggy.in", api_config=None)
+        assert self._lookup(partner) == "instamart.vendors@swiggy.in"
+
+    def test_column_wins_over_the_legacy_config_key(self) -> None:
+        # Master Data edits the column, so an edit there must take effect.
+        partner = SimpleNamespace(
+            email_address="new@swiggy.in", api_config={"ops_email": "stale@swiggy.in"}
+        )
+        assert self._lookup(partner) == "new@swiggy.in"
+
+    def test_falls_back_to_ops_email(self) -> None:
+        partner = SimpleNamespace(email_address=None, api_config={"ops_email": "ops@lots.in"})
+        assert self._lookup(partner) == "ops@lots.in"
+
+    def test_blank_column_falls_through_rather_than_winning(self) -> None:
+        partner = SimpleNamespace(email_address="   ", api_config={"ops_email": "ops@lots.in"})
+        assert self._lookup(partner) == "ops@lots.in"
+
+    def test_no_address_anywhere_is_empty(self) -> None:
+        assert self._lookup(SimpleNamespace(email_address=None, api_config={})) == ""

@@ -661,11 +661,29 @@ def _blinkit_item_id(line: Any, po: Any) -> str:
 
 
 def _partner_email(partner: Any) -> str:
-    """Extract ops email from partner.api_config["ops_email"] or return empty."""
+    """
+    Where this partner's outbound mail goes.
+
+    `trading_partners.email_address` first: it is the first-class column, it is what
+    Master Data edits, and it is what ops will have filled in. `api_config.ops_email`
+    is the older ad-hoc spot, kept as a fallback so partners configured that way keep
+    working.
+
+    Reading only `ops_email` meant every 855 and every email 856 was built with
+    `to: ""` while the address sat in `email_address` — Swiggy's ACK for CMMPO17234
+    had been retrying since creation and Gmail answered "Recipient address required".
+    That one at least failed loudly; an adapter less strict about an empty To header
+    would have reported the ACK delivered.
+    """
     import contextlib
+
+    with contextlib.suppress(Exception):
+        direct = (getattr(partner, "email_address", None) or "").strip()
+        if direct:
+            return direct
     with contextlib.suppress(Exception):
         cfg = partner.api_config or {}
-        return str(cfg.get("ops_email", ""))
+        return str(cfg.get("ops_email", "") or "").strip()
     return ""
 
 

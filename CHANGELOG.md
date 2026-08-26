@@ -1,5 +1,23 @@
 # Changelog
 
+## No 855 acknowledgement has ever had a recipient (2026-08-26)
+
+With the Gmail scope fixed and the ASN for CMMPO17234 delivered, its 855 still
+refused to send: Gmail answered 400 "Recipient address required".
+
+`_partner_email` read only `partner.api_config["ops_email"]` and ignored
+`trading_partners.email_address` — the first-class column, the one Master Data edits,
+and the one holding `instamart.vendors@swiggy.in`. Every 855 and every email 856 built
+through `b1_to_outbound` was therefore addressed to `""`. Swiggy's ACK had been
+retrying since creation for that reason and nothing else.
+
+It failed loudly only because Gmail rejects an empty To header. An adapter less strict
+would have reported the acknowledgement delivered, and an SLA breach on a document
+nobody received is invisible until the retailer asks where it is.
+
+Now `email_address` first, `ops_email` as a fallback so partners configured the old way
+keep working, and a blank column falls through rather than winning.
+
 ## Swiggy's ASN email had no recipient and no subject (2026-08-26)
 
 Pushing Swiggy PO CMMPO17234 exposed the mail path, which had never actually
