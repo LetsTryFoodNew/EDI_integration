@@ -32,7 +32,15 @@ from app.adapters.email.base import AttachmentMeta, InboundEmail
 
 log = structlog.get_logger(__name__)
 
-SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
+SCOPES = [
+    "https://www.googleapis.com/auth/gmail.readonly",
+    # Outbound 855/856 for mail partners go out through this same token. Granted
+    # scopes are baked into the refresh token, so asking for gmail.send at load time
+    # does nothing if the token was minted read-only — Gmail answers 403
+    # "insufficient authentication scopes" at dispatch, after the ASN is already
+    # queued. Re-run scripts/auth_gmail.py to mint a token carrying both.
+    "https://www.googleapis.com/auth/gmail.send",
+]
 
 
 class GmailAuthError(RuntimeError):

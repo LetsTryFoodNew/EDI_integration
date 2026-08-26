@@ -506,6 +506,7 @@ def _partner_asn_payload(
     from sqlalchemy import select
 
     from app.adapters.outbound.blinkit_asn import build_blinkit_asn_payload
+    from app.adapters.outbound.email_asn import build_email_asn_payload
     from app.adapters.outbound.zepto_asn import build_zepto_asn_payload
     from app.models.master_data import SellerEntity
 
@@ -515,14 +516,23 @@ def _partner_asn_payload(
     }
 
     code = getattr(partner, "code", "")
-    builder = builders.get(code)
-    if builder is None:
-        return _asn_payload(po, asn, invoice)
-
     seller = db.execute(
         select(SellerEntity).where(SellerEntity.deleted_at.is_(None)).limit(1)
     ).scalar_one_or_none()
-    payload, warnings = builder(db, po, asn, invoice, partner, seller)
+
+    builder = builders.get(code)
+    if builder is None:
+        body = _asn_payload(po, asn, invoice)
+        if str(getattr(partner, "source_channel", "")) != "EMAIL":
+            return body
+        # An email partner needs an envelope, not a shipment body. EmailOutboundAdapter
+        # reads `to`, `subject` and `body_text`, so a bare canonical body was going out
+        # with an empty To header and a subject of "(no subject)" — delivered nowhere,
+        # recorded as SENT.
+        payload, warnings = build_email_asn_payload(po, asn, invoice, partner, seller, body)
+    else:
+        payload, warnings = builder(db, po, asn, invoice, partner, seller)
+
     for w in warnings:
         log.warning(
             "asn.payload_warning", partner=code, po=po.buyer_po_number, warning=w

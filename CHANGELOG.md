@@ -1,5 +1,43 @@
 # Changelog
 
+## Swiggy's ASN email had no recipient and no subject (2026-08-26)
+
+Pushing Swiggy PO CMMPO17234 exposed the mail path, which had never actually
+delivered anything.
+
+`BaseOutboundAdapter` is explicit that payload construction happens before dispatch
+and the adapter must not read the DB, so `EmailOutboundAdapter._build_mime` reads
+`to`, `subject` and `body_text` straight off the stored payload. Nothing ever put
+them there: `_partner_asn_payload` had wire-format builders for Blinkit and Zepto and
+handed everyone else the partner-neutral shipment body. That body has none of those
+three keys, so the Swiggy ASN was headed for Gmail with an empty To header and a
+subject of "(no subject)" — delivered nowhere, and recorded as SENT.
+
+`app/adapters/outbound/email_asn.py` renders the envelope at message creation time,
+which also means the exact email is visible in the Outbound Messages tab before it is
+sent rather than materialising inside Gmail. Both a plain-text and an HTML part:
+warehouse mailboxes and EDI mailbots routinely strip HTML, and the shipment lines
+have to survive that. Quantities lose their stored scale (15.0000 reads as a mistake
+on a delivery note), absent optional fields are omitted rather than printed as
+"None", and the canonical body is kept under `asn` so nothing is lost. A partner with
+no `email_address` warns instead of addressing mail to nobody.
+
+**Gmail scope.** The token was minted `gmail.readonly`, so the send answers 403
+"insufficient authentication scopes" at dispatch, after the ASN is queued. The
+adapter already asked for `gmail.send` when loading credentials, but granted scopes
+are baked into the refresh token — asking at load time does nothing. `SCOPES` now
+carries both in `gmail_client.py` and `auth_gmail.py`; **`scripts/auth_gmail.py` has
+to be re-run** to mint a token that can send, which needs a browser consent.
+
+Also on CMMPO17234: partner CardCode C00014 -> D00002 (SAP holds Swiggy's buying
+entity as SCOOTSY LOGISTICS PVT LTD (MAIN), the name printed on the PO), and the
+blank buyer GSTIN that raised E001 filled with 36AAVCS1691R2Z5. That GSTIN was not
+guessed — the PO ships to "143E/A1 ... Mangalapally Village, Ibrahimpatnam,
+Rangareddy, Telangana-501510", and D00002 carries exactly that address as
+"501510  143E/A1-SCOOTSY". Its name is set as ship-to and bill-to so B1 books against
+that DC: D00002 has 109 addresses across twenty-odd states, and without naming one B1
+picks the customer default and the place of supply is wrong.
+
 ## Manual Inbox can now take a purchase order (2026-08-26)
 
 LOTS Wholesale send orders by phone and paper; Reliance/JioMart publish theirs on a
