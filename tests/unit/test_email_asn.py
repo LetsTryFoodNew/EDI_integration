@@ -153,3 +153,77 @@ class TestPartnerEmailLookup:
 
     def test_no_address_anywhere_is_empty(self) -> None:
         assert self._lookup(SimpleNamespace(email_address=None, api_config={})) == ""
+
+
+class TestInvoiceAttachment:
+    """
+    The tax invoice rides along with the ASN.
+
+    Named rather than carried: send_outbound renders the PDF from the invoice record
+    immediately before dispatch, so it always matches the invoice — a stored copy goes
+    stale the moment an IRN arrives on a re-push — and no base64 blob sits in the
+    payload column.
+    """
+
+    def test_envelope_names_the_invoice(self) -> None:
+        payload, _ = build()
+        assert payload["attach_invoice"] == "DUMMY-SWIGGY-46581"
+
+    def test_a_blank_body_field_still_finds_the_invoice_record(self) -> None:
+        # The body is a convenience copy; the invoice row is the source of truth.
+        payload, _ = build(body={**BODY, "invoice_number": None})
+        assert payload["attach_invoice"] == "DUMMY-SWIGGY-46581"
+
+    def test_no_invoice_anywhere_means_no_attachment_request(self) -> None:
+        payload, _ = build_email_asn_payload(
+            PO, ASN, SimpleNamespace(invoice_number=None), PARTNER, SELLER,
+            {**BODY, "invoice_number": None},
+        )
+        assert "attach_invoice" not in payload
+
+    def test_the_body_says_the_invoice_is_attached(self) -> None:
+        # Otherwise a reader who cannot see attachments has no idea one exists.
+        payload, _ = build()
+        for part in ("body_text", "body_html"):
+            assert "attached" in payload[part]
+
+
+class TestMimeAssembly:
+    @staticmethod
+    def _mime(payload):
+        from app.adapters.outbound.email_outbound import EmailOutboundAdapter
+
+        return EmailOutboundAdapter._build_mime(payload)
+
+    def _base(self):
+        return {"to": "a@b.in", "subject": "S", "body_text": "T", "body_html": "<p>H</p>"}
+
+    def test_without_attachments_it_stays_alternative(self) -> None:
+        msg = self._mime(self._base())
+        assert msg.get_content_subtype() == "alternative"
+
+    def test_an_attachment_forces_a_mixed_wrapper(self) -> None:
+        # text/html are the same content and the reader picks one; a PDF is different
+        # content. Attaching it into `alternative` makes clients treat it as another
+        # rendering of the body and quietly hide it.
+        msg = self._mime({**self._base(), "attachments": [
+            {"filename": "Invoice-X.pdf", "mime_type": "application/pdf", "content": b"%PDF-1.4"},
+        ]})
+        assert msg.get_content_subtype() == "mixed"
+        parts = msg.get_payload()
+        assert parts[0].get_content_subtype() == "alternative"
+        assert parts[1].get_filename() == "Invoice-X.pdf"
+        assert parts[1].get_payload(decode=True) == b"%PDF-1.4"
+
+    def test_headers_survive_the_wrapper(self) -> None:
+        msg = self._mime({**self._base(), "attachments": [
+            {"filename": "x.pdf", "mime_type": "application/pdf", "content": b"x"},
+        ]})
+        assert msg["To"] == "a@b.in"
+        assert msg["Subject"] == "S"
+
+    def test_attachment_is_marked_for_download(self) -> None:
+        msg = self._mime({**self._base(), "attachments": [
+            {"filename": "x.pdf", "mime_type": "application/pdf", "content": b"x"},
+        ]})
+        assert "attachment" in msg.get_payload()[1]["Content-Disposition"]

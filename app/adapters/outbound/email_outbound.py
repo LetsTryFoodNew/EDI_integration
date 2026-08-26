@@ -15,11 +15,19 @@ Payload schema (built by b1_to_outbound.py):
     "body_text": "Plain-text body",
     "body_html": "<html>...</html>",    (optional)
     "reply_to_message_id": "..."         (optional Gmail message_id to thread)
+    "attachments": [                     (optional, rendered by send_outbound.py)
+      {"filename": "Invoice-X.pdf", "mime_type": "application/pdf", "content": b"..."}
+    ]
   }
+
+Attachments arrive as raw bytes and are never stored: `send_outbound._with_attachments`
+renders them from the DB immediately before dispatch, so the file always matches the
+record it came from and no base64 blob sits in the payload column.
 """
 from __future__ import annotations
 
 import base64
+from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Any
@@ -80,13 +88,32 @@ class EmailOutboundAdapter(BaseOutboundAdapter):
 
     @staticmethod
     def _build_mime(payload: dict[str, Any]) -> MIMEMultipart:
-        msg = MIMEMultipart("alternative")
+        """
+        Assemble the message.
+
+        The text/html pair has to stay inside its own `alternative` part: those two are
+        the *same* content and the reader picks one. An attachment is different content
+        and belongs beside them, so the moment there is a file the whole thing is
+        wrapped in `mixed`. Attaching a PDF directly into `alternative` makes clients
+        treat it as another rendering of the body and quietly hide it.
+        """
+        alternative = MIMEMultipart("alternative")
+        if payload.get("body_text"):
+            alternative.attach(MIMEText(payload["body_text"], "plain", "utf-8"))
+        if payload.get("body_html"):
+            alternative.attach(MIMEText(payload["body_html"], "html", "utf-8"))
+
+        attachments = payload.get("attachments") or []
+        if attachments:
+            msg = MIMEMultipart("mixed")
+            msg.attach(alternative)
+            for att in attachments:
+                msg.attach(_attachment_part(att))
+        else:
+            msg = alternative
+
         msg["To"] = payload.get("to", "")
         msg["Subject"] = payload.get("subject", "(no subject)")
-        if payload.get("body_text"):
-            msg.attach(MIMEText(payload["body_text"], "plain", "utf-8"))
-        if payload.get("body_html"):
-            msg.attach(MIMEText(payload["body_html"], "html", "utf-8"))
         return msg
 
     @staticmethod
@@ -98,3 +125,16 @@ class EmailOutboundAdapter(BaseOutboundAdapter):
             return msg.get("threadId")
         except Exception:
             return None
+
+
+def _attachment_part(att: dict[str, Any]) -> MIMEApplication:
+    """One file, named so the recipient's mail client offers to save it."""
+    content = att.get("content") or b""
+    if isinstance(content, str):
+        content = content.encode("utf-8")
+    subtype = str(att.get("mime_type") or "application/octet-stream").split("/")[-1]
+    part = MIMEApplication(content, _subtype=subtype)
+    part.add_header(
+        "Content-Disposition", "attachment", filename=str(att.get("filename") or "attachment")
+    )
+    return part

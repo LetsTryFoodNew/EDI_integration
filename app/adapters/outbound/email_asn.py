@@ -52,9 +52,12 @@ def build_email_asn_payload(
         )
 
     lines = list(body.get("line_items") or [])
-    invoice_number = body.get("invoice_number") or getattr(invoice, "invoice_number", "")
-    po_number = body.get("po_number") or getattr(po, "buyer_po_number", "")
-    asn_number = body.get("asn_number") or getattr(asn, "asn_number", "")
+    # Coerced to str because both bodies escape and pad these, and a None reaching
+    # html.escape raises rather than rendering — an ASN with no invoice number is
+    # unusual but must not take the covering email down with it.
+    invoice_number = str(body.get("invoice_number") or getattr(invoice, "invoice_number", "") or "")
+    po_number = str(body.get("po_number") or getattr(po, "buyer_po_number", "") or "")
+    asn_number = str(body.get("asn_number") or getattr(asn, "asn_number", "") or "")
 
     subject = f"ASN {asn_number} — PO {po_number} — Invoice {invoice_number}"
 
@@ -67,6 +70,12 @@ def build_email_asn_payload(
         # re-render without rebuilding from the invoice.
         "asn": body,
     }
+    if invoice_number:
+        # Named, not carried: send_outbound renders the PDF from the invoice record
+        # immediately before dispatch, so the attachment always matches the invoice
+        # (an IRN arriving on a re-push would make a stored copy stale) and no base64
+        # blob sits in the payload column.
+        envelope["attach_invoice"] = invoice_number
     return envelope, warnings
 
 
@@ -117,17 +126,19 @@ def _text_body(
 ) -> str:
     rows = _rows(lines)
     width = max([len(r[0]) for r in rows] + [9])
-    out = [
-        f"Advance Ship Notice {asn_number}",
-        "",
-        f"Purchase order : {po_number}",
-        f"Invoice        : {invoice_number}",
-    ]
+    out = [f"Advance Ship Notice {asn_number}", ""]
+    if po_number:
+        out.append(f"Purchase order : {po_number}")
+    if invoice_number:
+        out.append(f"Invoice        : {invoice_number}")
     out += [f"{k:<15}: {v}" for k, v in _meta(body)]
     out += ["", f"{'Your SKU'.ljust(width)}  {'Our code':<10} {'Qty':>8}  Batch / Expiry", "-" * (width + 42)]
     for sku, item, qty, batch, expiry in rows:
         out.append(f"{sku.ljust(width)}  {item:<10} {qty:>8}  {batch} {expiry}".rstrip())
-    out += ["", f"{len(rows)} line(s) despatched.", "", f"{_seller_name(seller)}",
+    out += ["", f"{len(rows)} line(s) despatched."]
+    if invoice_number:
+        out.append(f"The GST tax invoice {invoice_number} is attached as a PDF.")
+    out += ["", f"{_seller_name(seller)}",
             "Sent automatically by the EDI middleware — please do not reply."]
     return "\n".join(out)
 
@@ -143,7 +154,10 @@ def _html_body(
     meta = "".join(
         f"<tr><td style='padding:2px 12px 2px 0;color:#666'>{escape(k)}</td>"
         f"<td style='padding:2px 0'><strong>{escape(v)}</strong></td></tr>"
-        for k, v in [("Purchase order", po_number), ("Invoice", invoice_number), *_meta(body)]
+        for k, v in [
+            *[(k, v) for k, v in (("Purchase order", po_number), ("Invoice", invoice_number)) if v],
+            *_meta(body),
+        ]
     )
     rows = "".join(
         "<tr>"
@@ -167,7 +181,10 @@ def _html_body(
         f"<table style='margin:12px 0 20px;border-collapse:collapse'>{meta}</table>"
         f"<table style='border-collapse:collapse;width:100%'><thead><tr>{head}</tr></thead>"
         f"<tbody>{rows}</tbody></table>"
-        f"<p style='color:#666;margin-top:20px'>{len(lines)} line(s) despatched.</p>"
+        f"<p style='color:#666;margin-top:20px'>{len(lines)} line(s) despatched."
+        + (f" The GST tax invoice <strong>{escape(invoice_number)}</strong> is attached "
+           "as a PDF." if invoice_number else "")
+        + "</p>"
         f"<p style='color:#999;font-size:12px;margin-top:24px'>{escape(_seller_name(seller))} — "
         "sent automatically by the EDI middleware, please do not reply.</p>"
         "</div>"

@@ -1,5 +1,38 @@
 # Changelog
 
+## The tax invoice now rides along with the ASN email (2026-08-26)
+
+`app/utils/invoice_pdf.py` has said in its own docstring since it was written that it
+serves "the ops Download PDF action **and** the attachment on outbound email to
+mail-based partners". Only the first half was ever wired up, so Swiggy got a delivery
+note with no invoice behind it and no way to reconcile the shipment.
+
+**Named, not carried.** The envelope records `attach_invoice: "<invoice_number>"` and
+`send_outbound._with_attachments` renders the PDF from the invoice record immediately
+before dispatch. A stored copy would be tens of kilobytes of base64 in a JSONB column
+per ASN, would make the Outbound Messages tab unreadable, and would go stale the
+moment an IRN arrived on a re-push — regenerating always matches the record. Rendering
+in the workflow rather than the adapter also keeps `BaseOutboundAdapter`'s rule intact:
+the adapter transports and never touches the DB.
+
+A render failure logs and sends without the attachment rather than raising. The
+covering email is still worth delivering.
+
+**MIME structure matters here.** text and html are the *same* content and the reader
+picks one, so they stay inside `multipart/alternative`; a PDF is different content and
+belongs beside them, so the presence of an attachment wraps the whole message in
+`multipart/mixed`. Attaching a file directly into `alternative` makes mail clients
+treat it as another rendering of the body and quietly hide it.
+
+Fixed while testing: an ASN whose invoice number was missing everywhere crashed the
+HTML body — `html.escape(None)` raises. Numbers are coerced at the source and empty
+header rows are dropped rather than printed with nothing after the colon.
+
+Verified on Swiggy PO CMMPO17234 by reading the sent message back out of Gmail:
+`multipart/mixed` → `multipart/alternative` (text 1,320 B + html 7,524 B) plus
+`Invoice-DUMMY-SWIGGY-46581.pdf`, 5,278 bytes, downloaded and confirmed a real PDF
+(`%PDF-1.4` … `%%EOF`) carrying all 14 lines, both GSTINs and the IGST column.
+
 ## No 855 acknowledgement has ever had a recipient (2026-08-26)
 
 With the Gmail scope fixed and the ASN for CMMPO17234 delivered, its 855 still

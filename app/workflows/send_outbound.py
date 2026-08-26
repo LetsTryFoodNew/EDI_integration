@@ -22,10 +22,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from uuid import UUID
+
+    from sqlalchemy.orm import Session
 
 import structlog
 
@@ -130,7 +132,7 @@ def send_outbound_message(outbound_msg_id: UUID) -> SendResult:
         # Call adapter
         result = adapter.send(
             doc_type=str(msg.doc_type),
-            payload=msg.payload or {},
+            payload=_with_attachments(session, msg),
             idempotency_key=str(outbound_msg_id),
         )
 
@@ -212,6 +214,62 @@ def send_outbound_message(outbound_msg_id: UUID) -> SendResult:
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+def _with_attachments(session: Session, msg: Any) -> dict[str, Any]:
+    """
+    Render any document the payload asks to be attached, just before dispatch.
+
+    The payload names an invoice (`attach_invoice`) rather than carrying the file,
+    for two reasons. A tax invoice PDF is tens of kilobytes and base64 in a JSONB
+    column is a third larger again — storing one per ASN bloats the row and makes the
+    Outbound Messages tab unreadable. And the PDF is derived: regenerating it from the
+    invoice always matches the invoice, whereas a stored copy silently goes stale the
+    moment an IRN arrives on a re-push.
+
+    Rendering here rather than in the adapter keeps `BaseOutboundAdapter`'s rule intact
+    — the adapter transports and never touches the DB — while putting the DB access in
+    the workflow layer, which already holds the session.
+
+    A failure to render must not swallow the document: the covering email is still
+    worth sending, so this logs and sends without the attachment rather than raising.
+    """
+    payload = dict(msg.payload or {})
+    invoice_number = payload.pop("attach_invoice", None)
+    if not invoice_number:
+        return payload
+
+    from sqlalchemy import select
+
+    from app.models.invoice import EdiInvoice
+    from app.utils.invoice_pdf import render_invoice_pdf
+
+    invoice = session.execute(
+        select(EdiInvoice).where(EdiInvoice.invoice_number == invoice_number)
+    ).scalar_one_or_none()
+    if invoice is None:
+        log.warning("outbound.attachment_missing", invoice_number=invoice_number)
+        return payload
+
+    try:
+        pdf = render_invoice_pdf(session, invoice)
+    except Exception as exc:
+        log.exception(
+            "outbound.attachment_failed", invoice_number=invoice_number, error=str(exc)
+        )
+        return payload
+
+    payload["attachments"] = [{
+        "filename": f"Invoice-{invoice_number}.pdf",
+        "mime_type": "application/pdf",
+        "content": pdf,
+    }]
+    log.info(
+        "outbound.attachment_rendered",
+        invoice_number=invoice_number,
+        bytes=len(pdf),
+    )
+    return payload
 
 def _check_sla(msg: object, partner: object) -> None:
     """Log a warning if the ACK SLA deadline has passed."""
