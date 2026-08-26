@@ -14,6 +14,7 @@ import InboxDetailPage from "@/features/inbox/InboxDetailPage";
 import ApiInboxPage from "@/features/api-inbox/ApiInboxPage";
 import ApiInboxDetailPage from "@/features/api-inbox/ApiInboxDetailPage";
 import ManualInboxPage from "@/features/manual-inbox/ManualInboxPage";
+import ManualPoEntryPage from "@/features/manual-inbox/ManualPoEntryPage";
 
 // Vite's `base` (VITE_BASE_PATH at build time) drives this automatically, so
 // the router's mount path can never drift out of sync with the asset paths
@@ -37,6 +38,7 @@ export const router = createBrowserRouter(
         { path: "/api-inbox", element: <ApiInboxPage /> },
         { path: "/api-inbox/:messageId", element: <ApiInboxDetailPage /> },
         { path: "/manual-inbox", element: <ManualInboxPage /> },
+        { path: "/manual-inbox/:partnerCode/new", element: <ManualPoEntryPage /> },
         { path: "/pos", element: <POListPage /> },
         { path: "/pos/:poId", element: <PODetailPage /> },
         { path: "/exceptions", element: <ExceptionsPage /> },

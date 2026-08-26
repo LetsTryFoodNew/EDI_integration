@@ -1,24 +1,21 @@
 import { useMemo } from "react";
 import { useForm, useFieldArray, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate, useParams } from "react-router-dom";
 import { z } from "zod";
-import { Plus, Trash2, Loader2 } from "lucide-react";
+import { ArrowLeft, Plus, Trash2, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-} from "@/components/ui/dialog";
+import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
-import { createManualEntry } from "../api";
-import type { ManualPoEntry } from "../api";
+import EmptyState from "@/components/shared/EmptyState";
+import { createManualEntry, fetchManualPartners } from "./api";
+import type { ManualPoEntry } from "./api";
 
 // The operator types quantity, price and one GST rate. Everything arithmetic — the
 // taxable amount, the CGST/SGST-vs-IGST split, the totals — is derived server-side in
@@ -97,20 +94,52 @@ function num(value: string | undefined): number {
   return Number.isFinite(n) ? n : 0;
 }
 
-export default function ManualPoForm({
+export default function ManualPoEntryPage() {
+  const { partnerCode = "" } = useParams();
+  const {
+    data: partners,
+    isLoading,
+    isError,
+  } = useQuery({ queryKey: ["manual-inbox", "partners"], queryFn: fetchManualPartners });
+
+  const partner = partners?.find((p) => p.code === partnerCode);
+
+  if (isLoading) return <FormSkeleton />;
+  if (isError || !partner) {
+    return (
+      <div className="p-6">
+        <BackLink />
+        <div className="py-16">
+          <EmptyState
+            title={isError ? "Could not load platforms" : `No manual platform ${partnerCode}`}
+            description={
+              isError
+                ? "The partner list could not be fetched. Try again in a moment."
+                : "Only partners whose orders arrive by hand can be keyed in here."
+            }
+          />
+        </div>
+      </div>
+    );
+  }
+
+  // Keyed on the partner so switching platforms starts a clean form rather than
+  // carrying the previous one's lines across.
+  return <EntryForm key={partner.code} partnerCode={partner.code} partnerName={partner.name} channel={partner.source_channel} />;
+}
+
+function EntryForm({
   partnerCode,
   partnerName,
-  open,
-  onClose,
-  onCreated,
+  channel,
 }: {
   partnerCode: string;
   partnerName: string;
-  open: boolean;
-  onClose: () => void;
-  onCreated: () => void;
+  channel: string;
 }) {
   const { toast } = useToast();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
 
   const {
     register,
@@ -158,8 +187,10 @@ export default function ManualPoForm({
     onSuccess: (result) => {
       toast({ title: "Purchase order recorded", description: result.message });
       reset();
-      onCreated();
-      onClose();
+      // The row appears as soon as the raw message is saved; its parse status
+      // settles a moment later, which the inbox's own refetch picks up.
+      queryClient.invalidateQueries({ queryKey: ["manual-inbox"] });
+      navigate("/manual-inbox");
     },
     onError: (error: unknown) => {
       toast({
@@ -171,15 +202,21 @@ export default function ManualPoForm({
   });
 
   return (
-    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="max-w-5xl max-h-[90vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>New purchase order — {partnerName}</DialogTitle>
-          <DialogDescription>
-            Enter what is printed on the order. Tax amounts and totals are worked out
-            for you, so they cannot disagree with the lines.
-          </DialogDescription>
-        </DialogHeader>
+    <div className="h-full overflow-y-auto">
+      <div className="max-w-6xl mx-auto p-6 space-y-6">
+        <div>
+          <BackLink />
+          <div className="flex items-center gap-3 mt-2">
+            <h1 className="text-xl font-semibold">New purchase order</h1>
+            <Badge variant="outline" className="text-xs">
+              {channel}
+            </Badge>
+          </div>
+          <p className="text-sm text-muted-foreground mt-1">
+            {partnerName} — enter what is printed on the order. Tax amounts and totals
+            are worked out for you, so they cannot disagree with the lines.
+          </p>
+        </div>
 
         <form
           onSubmit={handleSubmit((values) => mutation.mutate(values))}
@@ -372,8 +409,8 @@ export default function ManualPoForm({
             <Textarea {...register("notes")} rows={2} />
           </Field>
 
-          <div className="flex justify-end gap-2 pt-2 border-t">
-            <Button type="button" variant="outline" onClick={onClose}>
+          <div className="flex justify-end gap-2 pt-4 border-t">
+            <Button type="button" variant="outline" onClick={() => navigate("/manual-inbox")}>
               Cancel
             </Button>
             <Button type="submit" disabled={mutation.isPending}>
@@ -382,8 +419,36 @@ export default function ManualPoForm({
             </Button>
           </div>
         </form>
-      </DialogContent>
-    </Dialog>
+      </div>
+    </div>
+  );
+}
+
+function BackLink() {
+  const navigate = useNavigate();
+  return (
+    <button
+      type="button"
+      onClick={() => navigate("/manual-inbox")}
+      className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+    >
+      <ArrowLeft className="h-4 w-4" />
+      Manual Inbox
+    </button>
+  );
+}
+
+function FormSkeleton() {
+  return (
+    <div className="max-w-6xl mx-auto p-6 space-y-6">
+      <Skeleton className="h-8 w-64" />
+      <div className="grid gap-3 sm:grid-cols-3">
+        {Array.from({ length: 6 }, (_, i) => (
+          <Skeleton key={i} className="h-14 w-full" />
+        ))}
+      </div>
+      <Skeleton className="h-40 w-full" />
+    </div>
   );
 }
 
