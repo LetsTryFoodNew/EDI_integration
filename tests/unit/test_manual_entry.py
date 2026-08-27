@@ -191,3 +191,90 @@ class TestRejections:
 
     def test_never_raises(self) -> None:
         assert ManualEntryParser().parse(SimpleNamespace(id=uuid4(), payload=None)).success is False
+
+
+class TestOperatorChosenItem:
+    """
+    A keyed-in line can name its SAP item directly.
+
+    A manual partner has no catalogue for a buyer SKU to be mapped from, so requiring a
+    sku_mapping row first would make hand-keyed orders impossible to process — every
+    LOTS line came back E002_SKU_UNRESOLVED. The operator picks the item out of the
+    material master instead, which is a decision rather than a guess, and SkuMappingRule
+    still verifies it against master data.
+    """
+
+    def test_the_chosen_item_lands_on_the_canonical_line(self) -> None:
+        doc = _parse(line_items=[
+            {"buyer_sku": "PHONE-ORDER-1", "ordered_qty": "10", "unit_price": "100",
+             "gst_rate": "5", "b1_item_code": "FG00233"},
+        ]).doc
+        assert doc.line_items[0].sap_material_no == "FG00233"
+
+    def test_omitting_it_leaves_the_line_for_the_usual_lookup(self) -> None:
+        # Nothing else sets sap_material_no before validation, so absent must mean
+        # absent — otherwise the rule cannot tell a choice from a default.
+        doc = _parse().doc
+        assert doc.line_items[0].sap_material_no is None
+
+    def test_blank_is_treated_as_omitted(self) -> None:
+        doc = _parse(line_items=[
+            {"buyer_sku": "A", "ordered_qty": "1", "unit_price": "10",
+             "gst_rate": "5", "b1_item_code": "   "},
+        ]).doc
+        assert doc.line_items[0].sap_material_no is None
+
+
+class TestSkuRulePreassigned:
+    """
+    SkuMappingRule's handling of a line that already names an item.
+
+    This must not become a way for a *partner* PO to skip mapping: no partner parser
+    sets sap_material_no, so the branch is only reachable from a hand-keyed order.
+    """
+
+    @staticmethod
+    def _run(line_code, material):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        from app.validators.rules.sku_mapping import SkuMappingRule
+
+        line = SimpleNamespace(
+            id=uuid4(), line_number=1, buyer_sku="X", sap_material_no=line_code,
+            sku_mapping_id=None,
+        )
+        session = MagicMock()
+        session.execute.return_value.scalar_one_or_none.return_value = material
+        ctx = SimpleNamespace(session=session, lines=[line], partner=SimpleNamespace(id=uuid4()))
+        return SkuMappingRule().run(ctx)
+
+    def _material(self, **kw):
+        from types import SimpleNamespace
+
+        fields = {
+            "item_code": "FG00233", "item_name": "Khatta Meetha",
+            "valid_for": 1, "frozen_for": False, "id": uuid4(),
+        }
+        return SimpleNamespace(**{**fields, **kw})
+
+    def test_a_valid_item_passes(self) -> None:
+        assert self._run("FG00233", self._material()) == []
+
+    def test_an_item_not_in_the_master_is_refused(self) -> None:
+        # FG00460 was mapped for Blinkit and does not exist in SAP; B1 answered
+        # ODBC -2028 and rejected the whole 18-line document. Caught here instead.
+        violations = self._run("FG00460", None)
+        assert len(violations) == 1
+        assert violations[0].issue_code == "E002_SKU_UNRESOLVED"
+        assert "material master" in violations[0].message
+
+    def test_an_inactive_item_is_refused(self) -> None:
+        violations = self._run("FG00349", self._material(valid_for=0))
+        assert len(violations) == 1
+        assert "inactive or frozen" in violations[0].message
+
+    def test_a_frozen_item_is_refused(self) -> None:
+        violations = self._run("FG00349", self._material(frozen_for=True))
+        assert len(violations) == 1
+        assert "inactive or frozen" in violations[0].message

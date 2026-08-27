@@ -10,6 +10,7 @@ import {
   AlertCircle,
   MinusCircle,
   Plus,
+  Pencil,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -106,23 +107,44 @@ function PartnerItem({
   );
 }
 
-function MessageRow({ msg, onClick }: { msg: InboxMessageItem; onClick: () => void }) {
+function MessageRow({
+  msg,
+  onClick,
+  onEdit,
+}: {
+  msg: InboxMessageItem;
+  onClick: () => void;
+  onEdit?: () => void;
+}) {
   return (
-    <button
-      onClick={onClick}
-      className="w-full text-left px-4 py-3 border-b hover:bg-muted/40 transition-colors"
-    >
-      <div className="flex items-center justify-between gap-3">
-        <span className="text-sm font-medium truncate">
-          {msg.subject || msg.po_number || msg.external_id}
-        </span>
-        <ParseStatusBadge status={msg.parse_status} />
-      </div>
-      <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
-        <DateDisplay iso={msg.received_at} format="dd MMM yyyy, HH:mm" />
-        {msg.po_number && <span className="font-mono">{msg.po_number}</span>}
-      </div>
-    </button>
+    <div className="w-full px-4 py-3 border-b hover:bg-muted/40 transition-colors flex items-start gap-3">
+      <button onClick={onClick} className="flex-1 min-w-0 text-left">
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-sm font-medium truncate">
+            {msg.subject || msg.po_number || msg.external_id}
+          </span>
+          <ParseStatusBadge status={msg.parse_status} />
+        </div>
+        <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
+          <DateDisplay iso={msg.received_at} format="dd MMM yyyy, HH:mm" />
+          {msg.po_number && <span className="font-mono">{msg.po_number}</span>}
+        </div>
+      </button>
+      {onEdit && (
+        <Button
+          variant="ghost"
+          size="sm"
+          className="shrink-0"
+          onClick={(e) => {
+            e.stopPropagation();
+            onEdit();
+          }}
+        >
+          <Pencil className="h-3.5 w-3.5 mr-1" />
+          Edit
+        </Button>
+      )}
+    </div>
   );
 }
 
@@ -253,6 +275,13 @@ export default function ManualInboxPage() {
                     key={m.id}
                     msg={m}
                     onClick={() => navigate(`/inbox/${m.id}`)}
+                    // Only a parsed order has a PO to correct; a failed one is fixed
+                    // by re-entering it, and a skipped one has nothing behind it.
+                    onEdit={
+                      m.parse_status === "SUCCESS" && m.po_id
+                        ? () => navigate(`/manual-inbox/${selected.code}/${m.po_id}/edit`)
+                        : undefined
+                    }
                   />
                 ))
               )}

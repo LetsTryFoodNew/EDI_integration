@@ -445,6 +445,11 @@ def _save_canonical_po(session: Any, doc: Any, raw: Any, partner: Any) -> Any:
             igst_rate=float(line.igst_rate) if line.igst_rate else None,
             igst_amount=float(line.igst_amount) if line.igst_amount else None,
             line_total=float(line.line_total) if line.line_total else None,
+            # Only ever set by a hand-keyed order, where the operator picked the item
+            # out of the material master. Dropping it here sent the line to validation
+            # looking unmapped, so an operator's explicit choice was silently discarded
+            # and the PO came back E002_SKU_UNRESOLVED anyway.
+            sap_material_no=line.sap_material_no,
         ))
 
     return po

@@ -1428,6 +1428,12 @@ class ManualPoLineEntry(BaseModel):
     unit_price: Decimal = Field(ge=0)
     gst_rate: Decimal = Field(default=Decimal("0"), ge=0, le=100)
 
+    # The SAP item this line ships. Optional, and only meaningful on a keyed-in order:
+    # a manual partner has no catalogue to map a buyer SKU from, so requiring a
+    # sku_mapping row first would make the whole feature unusable. See
+    # SkuMappingRule._preassigned for why accepting it does not weaken that rule.
+    b1_item_code: str | None = Field(default=None, max_length=50)
+
     description: str | None = Field(default=None, max_length=500)
     hsn_code: str | None = Field(default=None, max_length=10)
     buyer_uom: str | None = Field(default=None, max_length=20)
@@ -1486,3 +1492,23 @@ class ManualPoEntryResponse(BaseModel):
     revision: int
     queued: bool
     message: str
+
+
+class ManualPoEntryDetail(BaseModel):
+    """
+    A keyed-in order read back so it can be corrected.
+
+    Returns what the operator originally typed rather than the parsed PO: the entry is
+    the editable thing, and re-deriving a form from canonical line items would lose
+    the GST rate they entered (the canonical doc stores the split, not the rate) and
+    every field the parser computed away.
+    """
+    po_id: uuid.UUID
+    partner_code: str
+    partner_name: str
+    revision: int
+    po_status: str
+    editable: bool
+    #: Present when `editable` is false — why, in a sentence the operator can act on.
+    locked_reason: str | None = None
+    entry: ManualPoEntryRequest

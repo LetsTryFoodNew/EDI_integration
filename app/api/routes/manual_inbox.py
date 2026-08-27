@@ -12,8 +12,19 @@ Message listing, detail, retry-parse and attachment download reuse the
 /api/inbox/messages* routes, which are partner-scoped and channel-agnostic — a third
 copy of that logic would drift.
 
-GET  /api/manual-inbox/partners — MANUAL + PORTAL partners with message counts
-POST /api/manual-inbox/entries  — key in one purchase order by hand
+GET  /api/manual-inbox/partners      — MANUAL + PORTAL partners with message counts
+POST /api/manual-inbox/entries       — key in one purchase order by hand
+GET  /api/manual-inbox/entries/{id}  — read one back for correction
+
+A keyed-in order stays correctable because we authored it: a typo in a quantity is
+ours to fix, unlike a partner's PO where our copy has to keep matching theirs. A
+correction is filed as a **new revision** rather than an in-place edit — raw_messages
+is the immutable record of what arrived, and the existing versioning supersedes the
+previous one — so what was first typed survives alongside the fix.
+
+Correcting stops the moment the order leaves the building: once it is in SAP, or has
+an invoice or an ASN against it, a quiet edit here would leave our record disagreeing
+with a document someone else is already acting on.
 
 A keyed-in order is stored as a raw_message exactly like a webhook body, then parsed,
 validated, mapped and pushed by the same pipeline. Nothing downstream can tell it
@@ -24,7 +35,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -34,6 +45,7 @@ from app.api.routes.auth import get_current_user
 from app.models._enums import SourceChannel
 from app.schemas.api import (
     InboxPartnerSummary,
+    ManualPoEntryDetail,
     ManualPoEntryRequest,
     ManualPoEntryResponse,
     PaginatedResponse,
@@ -176,6 +188,27 @@ def create_manual_entry(
                 f"supersedes the previous one."
             ),
         )
+
+    if prior and entry.replace_existing:
+        # A revision supersedes whatever is live under this number, so it must not be
+        # filed once that order has left the building. Checked here as well as on the
+        # read, because the form may have been open since before the SAP push.
+        from app.models.edi_po import EdiPurchaseOrder
+
+        live = db.execute(
+            select(EdiPurchaseOrder)
+            .where(
+                EdiPurchaseOrder.trading_partner_id == partner.id,
+                EdiPurchaseOrder.buyer_po_number == entry.buyer_po_number,
+                EdiPurchaseOrder.deleted_at.is_(None),
+            )
+            .order_by(EdiPurchaseOrder.version.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        blocked = _locked_reason(db, live) if live is not None else None
+        if blocked:
+            raise HTTPException(status_code=409, detail=blocked)
+
     revision = prior + 1
 
     raw_id = uuid.uuid4()
@@ -277,3 +310,118 @@ def _enqueue_parse(raw_id: uuid.UUID) -> bool:
     except Exception as exc:  # queue down must not lose the entry — it is already saved
         log.error("manual.enqueue_failed", raw_id=str(raw_id), error=str(exc))
         return False
+
+
+def _locked_reason(db: Session, po: Any) -> str | None:
+    """
+    Why this keyed-in order can no longer be corrected, or None if it still can.
+
+    The line is "has anyone outside this system acted on it yet". Up to the SAP push
+    the order exists only here and a correction costs nothing. After it, a Sales Order,
+    an invoice or an ASN is already someone else's record, and editing ours quietly
+    would leave the two disagreeing with no trace of which is right.
+    """
+    from sqlalchemy import func, select
+
+    from app.models.asn import EdiAdvanceShipNotice
+    from app.models.invoice import EdiInvoice
+
+    status = str(po.po_status)
+    if status == "SUPERSEDED":
+        return "This revision has been replaced by a newer one — edit that instead."
+    if status == "CANCELLED":
+        return "This order is cancelled."
+    if po.b1_sales_order_doc_entry:
+        return (
+            f"Already in SAP as Sales Order {po.b1_sales_order_doc_num or po.b1_sales_order_doc_entry}. "
+            "Correct it in SAP, or cancel there and key in a fresh order."
+        )
+
+    for model, what in ((EdiInvoice, "an invoice"), (EdiAdvanceShipNotice, "an ASN")):
+        if db.execute(
+            select(func.count()).select_from(model).where(model.po_id == po.id)
+        ).scalar_one():
+            return f"{what.capitalize()} has been raised against this order."
+
+    return None
+
+
+@router.get("/entries/{po_id}", response_model=ManualPoEntryDetail)
+def read_manual_entry(
+    po_id: uuid.UUID,
+    db: Session = Depends(get_sync_db),  # noqa: B008
+    _current_user: UserResponse = Depends(get_current_user),  # noqa: B008
+) -> ManualPoEntryDetail:
+    """
+    Read a keyed-in order back in the shape it was entered, so it can be corrected.
+
+    Returns the stored entry payload rather than the parsed PO. The entry is the thing
+    the operator edits, and rebuilding a form from canonical line items would lose the
+    GST rate they typed — the canonical document keeps the resulting split, not the
+    rate that produced it.
+    """
+    from sqlalchemy import select
+
+    from app.models.edi_po import EdiPurchaseOrder
+    from app.models.master_data import TradingPartner
+    from app.models.raw_messages import RawMessage
+    from app.parsers.manual_parser import is_manual_entry
+
+    po = db.get(EdiPurchaseOrder, po_id)
+    if po is None or po.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="Purchase order not found")
+
+    raw = db.get(RawMessage, po.raw_message_id) if po.raw_message_id else None
+    if raw is None or not is_manual_entry(raw):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "This order was not keyed in by hand, so there is no entry to edit. A "
+                "partner's own PO has to keep matching the copy they hold."
+            ),
+        )
+
+    partner = db.get(TradingPartner, po.trading_partner_id)
+    payload = dict(raw.payload or {})
+    revision = int(payload.get("revision") or 1)
+
+    # Rebuild the request from the stored keystrokes, dropping the fields the route
+    # added at entry time (seller GSTIN, who typed it) which are not the operator's to
+    # edit and would be rejected by the schema's extra="forbid".
+    entry = ManualPoEntryRequest.model_validate({
+        "partner_code": payload.get("partner_code") or getattr(partner, "code", ""),
+        "buyer_po_number": payload.get("buyer_po_number") or po.buyer_po_number,
+        "line_items": payload.get("line_items") or [],
+        "buyer_po_date": payload.get("buyer_po_date"),
+        "requested_delivery_date": payload.get("requested_delivery_date"),
+        "buyer_name": payload.get("buyer_name"),
+        "buyer_gstin": payload.get("buyer_gstin"),
+        "ship_to": payload.get("ship_to") or {},
+        "currency": payload.get("currency") or "INR",
+        "notes": payload.get("notes"),
+    })
+
+    # A superseded revision is not itself editable, but saying so is unhelpful when the
+    # operator clicked Edit on the order: point at whichever revision is live.
+    live = db.execute(
+        select(EdiPurchaseOrder)
+        .where(
+            EdiPurchaseOrder.trading_partner_id == po.trading_partner_id,
+            EdiPurchaseOrder.buyer_po_number == po.buyer_po_number,
+            EdiPurchaseOrder.deleted_at.is_(None),
+        )
+        .order_by(EdiPurchaseOrder.version.desc())
+        .limit(1)
+    ).scalar_one_or_none() or po
+
+    reason = _locked_reason(db, live)
+    return ManualPoEntryDetail(
+        po_id=live.id,
+        partner_code=getattr(partner, "code", ""),
+        partner_name=getattr(partner, "name", ""),
+        revision=revision,
+        po_status=str(live.po_status),
+        editable=reason is None,
+        locked_reason=reason,
+        entry=entry,
+    )

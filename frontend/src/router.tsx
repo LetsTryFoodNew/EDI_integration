@@ -39,6 +39,7 @@ export const router = createBrowserRouter(
         { path: "/api-inbox/:messageId", element: <ApiInboxDetailPage /> },
         { path: "/manual-inbox", element: <ManualInboxPage /> },
         { path: "/manual-inbox/:partnerCode/new", element: <ManualPoEntryPage /> },
+        { path: "/manual-inbox/:partnerCode/:poId/edit", element: <ManualPoEntryPage /> },
         { path: "/pos", element: <POListPage /> },
         { path: "/pos/:poId", element: <PODetailPage /> },
         { path: "/exceptions", element: <ExceptionsPage /> },

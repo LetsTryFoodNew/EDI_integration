@@ -276,6 +276,10 @@ def _build_line(
     return EDI850Line(
         line_number=line_number,
         buyer_sku=sku,
+        # Carried straight onto the canonical line. Nothing else in the pipeline sets
+        # this before validation, so its presence is the signal that a person chose
+        # the item rather than a lookup resolving it.
+        sap_material_no=(str(raw.get("b1_item_code") or "").strip() or None),
         buyer_sku_description=(raw.get("description") or None),
         hsn_code=(raw.get("hsn_code") or None),
         ordered_qty=qty,

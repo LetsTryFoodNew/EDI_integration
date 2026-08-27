@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { useForm, useFieldArray, useWatch } from "react-hook-form";
+import { Controller, useForm, useFieldArray, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
@@ -14,8 +14,9 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import EmptyState from "@/components/shared/EmptyState";
-import { createManualEntry, fetchManualPartners } from "./api";
-import type { ManualPoEntry } from "./api";
+import { createManualEntry, fetchManualEntry, fetchManualPartners } from "./api";
+import type { ManualPoEntry, ManualPoEntryDetail } from "./api";
+import ItemPicker from "./components/ItemPicker";
 
 // The operator types quantity, price and one GST rate. Everything arithmetic — the
 // taxable amount, the CGST/SGST-vs-IGST split, the totals — is derived server-side in
@@ -40,6 +41,7 @@ const optionalDecimal = (label: string, max: number) =>
 
 const lineSchema = z.object({
   buyer_sku: z.string().trim().min(1, "SKU is required"),
+  b1_item_code: z.string().trim(),
   description: z.string().trim(),
   hsn_code: z.string().trim(),
   buyer_uom: z.string().trim(),
@@ -78,6 +80,7 @@ type FormValues = z.infer<typeof formSchema>;
 
 const EMPTY_LINE = {
   buyer_sku: "",
+  b1_item_code: "",
   description: "",
   hsn_code: "",
   buyer_uom: "",
@@ -95,16 +98,42 @@ function num(value: string | undefined): number {
 }
 
 export default function ManualPoEntryPage() {
-  const { partnerCode = "" } = useParams();
+  const { partnerCode = "", poId } = useParams();
   const {
     data: partners,
     isLoading,
     isError,
   } = useQuery({ queryKey: ["manual-inbox", "partners"], queryFn: fetchManualPartners });
 
+  // Only fetched in edit mode. The stored entry is what the operator edits — rebuilding
+  // a form from the canonical PO would lose the GST rate they typed, since the document
+  // keeps the resulting split rather than the rate that produced it.
+  const {
+    data: existing,
+    isLoading: entryLoading,
+    isError: entryError,
+  } = useQuery({
+    queryKey: ["manual-inbox", "entry", poId],
+    queryFn: () => fetchManualEntry(poId!),
+    enabled: !!poId,
+  });
+
   const partner = partners?.find((p) => p.code === partnerCode);
 
-  if (isLoading) return <FormSkeleton />;
+  if (isLoading || (poId && entryLoading)) return <FormSkeleton />;
+  if (poId && entryError) {
+    return (
+      <div className="p-6">
+        <BackLink />
+        <div className="py-16">
+          <EmptyState
+            title="Could not load this order"
+            description="It may not be a hand-keyed order, or it may have been removed."
+          />
+        </div>
+      </div>
+    );
+  }
   if (isError || !partner) {
     return (
       <div className="p-6">
@@ -123,19 +152,46 @@ export default function ManualPoEntryPage() {
     );
   }
 
-  // Keyed on the partner so switching platforms starts a clean form rather than
-  // carrying the previous one's lines across.
-  return <EntryForm key={partner.code} partnerCode={partner.code} partnerName={partner.name} channel={partner.source_channel} />;
+  if (existing && !existing.editable) {
+    return (
+      <div className="p-6">
+        <BackLink />
+        <div className="py-16">
+          <EmptyState
+            title={`${existing.entry.buyer_po_number} can no longer be edited`}
+            description={
+              existing.locked_reason ??
+              "This order has moved beyond the point where a correction is safe."
+            }
+          />
+        </div>
+      </div>
+    );
+  }
+
+  // Keyed on the partner and the order so switching between them starts a clean form
+  // rather than carrying the previous one's lines across.
+  return (
+    <EntryForm
+      key={`${partner.code}:${poId ?? "new"}`}
+      partnerCode={partner.code}
+      partnerName={partner.name}
+      channel={partner.source_channel}
+      existing={existing}
+    />
+  );
 }
 
 function EntryForm({
   partnerCode,
   partnerName,
   channel,
+  existing,
 }: {
   partnerCode: string;
   partnerName: string;
   channel: string;
+  existing?: ManualPoEntryDetail;
 }) {
   const { toast } = useToast();
   const navigate = useNavigate();
@@ -146,26 +202,14 @@ function EntryForm({
     control,
     handleSubmit,
     reset,
+    setValue,
     formState: { errors },
   } = useForm<FormValues>({
     resolver: zodResolver(formSchema),
-    defaultValues: {
-      buyer_po_number: "",
-      buyer_po_date: new Date().toISOString().slice(0, 10),
-      requested_delivery_date: "",
-      buyer_name: partnerName,
-      buyer_gstin: "",
-      ship_to_warehouse_code: "",
-      ship_to_name: "",
-      ship_to_line1: "",
-      ship_to_city: "",
-      ship_to_state: "",
-      ship_to_pincode: "",
-      ship_to_gstin: "",
-      notes: "",
-      line_items: [{ ...EMPTY_LINE }],
-    },
+    defaultValues: toFormValues(existing, partnerName),
   });
+
+  const isEdit = !!existing;
 
   const { fields, append, remove } = useFieldArray({ control, name: "line_items" });
   const watched = useWatch({ control, name: "line_items" });
@@ -183,9 +227,16 @@ function EntryForm({
   }, [watched]);
 
   const mutation = useMutation({
-    mutationFn: (values: FormValues) => createManualEntry(toEntry(values, partnerCode)),
+    // A correction is filed as a new revision rather than an in-place edit:
+    // raw_messages is the immutable record of what arrived, and the existing
+    // versioning supersedes the previous one, so what was first typed survives.
+    mutationFn: (values: FormValues) =>
+      createManualEntry({ ...toEntry(values, partnerCode), replace_existing: isEdit }),
     onSuccess: (result) => {
-      toast({ title: "Purchase order recorded", description: result.message });
+      toast({
+        title: isEdit ? "Correction recorded" : "Purchase order recorded",
+        description: result.message,
+      });
       reset();
       // The row appears as soon as the raw message is saved; its parse status
       // settles a moment later, which the inbox's own refetch picks up.
@@ -207,14 +258,26 @@ function EntryForm({
         <div>
           <BackLink />
           <div className="flex items-center gap-3 mt-2">
-            <h1 className="text-xl font-semibold">New purchase order</h1>
+            <h1 className="text-xl font-semibold">
+              {isEdit ? "Edit purchase order" : "New purchase order"}
+            </h1>
             <Badge variant="outline" className="text-xs">
               {channel}
             </Badge>
           </div>
           <p className="text-sm text-muted-foreground mt-1">
-            {partnerName} — enter what is printed on the order. Tax amounts and totals
-            are worked out for you, so they cannot disagree with the lines.
+            {isEdit ? (
+              <>
+                {partnerName} — correcting <strong>{existing.entry.buyer_po_number}</strong>.
+                Saving files this as revision {existing.revision + 1}; the version you
+                are editing is kept and marked superseded.
+              </>
+            ) : (
+              <>
+                {partnerName} — enter what is printed on the order. Tax amounts and
+                totals are worked out for you, so they cannot disagree with the lines.
+              </>
+            )}
           </p>
         </div>
 
@@ -309,6 +372,7 @@ function EntryForm({
                   <tr className="text-left text-xs text-muted-foreground border-b">
                     <th className="py-2 pr-2 font-medium w-8">#</th>
                     <th className="py-2 pr-2 font-medium min-w-[8rem]">Buyer SKU *</th>
+                    <th className="py-2 pr-2 font-medium min-w-[11rem]">SAP item</th>
                     <th className="py-2 pr-2 font-medium min-w-[12rem]">Description</th>
                     <th className="py-2 pr-2 font-medium w-24">HSN</th>
                     <th className="py-2 pr-2 font-medium w-20">UoM</th>
@@ -332,6 +396,32 @@ function EntryForm({
                         <td className="py-2 pr-2 text-muted-foreground">{i + 1}</td>
                         <Cell error={lineErrors?.buyer_sku?.message}>
                           <Input {...register(`line_items.${i}.buyer_sku`)} className="h-8" />
+                        </Cell>
+                        <Cell error={lineErrors?.b1_item_code?.message}>
+                          <Controller
+                            control={control}
+                            name={`line_items.${i}.b1_item_code`}
+                            render={({ field }) => (
+                              <ItemPicker
+                                value={field.value}
+                                onChange={field.onChange}
+                                onPick={(m) => {
+                                  // Fill the blanks the item already knows, without
+                                  // overwriting anything the operator has typed.
+                                  field.onChange(m.item_code);
+                                  if (!line?.description) {
+                                    setValue(`line_items.${i}.description`, m.item_name);
+                                  }
+                                  if (!line?.hsn_code && m.hsn) {
+                                    setValue(`line_items.${i}.hsn_code`, m.hsn);
+                                  }
+                                  if (!line?.buyer_uom && m.invntry_uom) {
+                                    setValue(`line_items.${i}.buyer_uom`, m.invntry_uom);
+                                  }
+                                }}
+                              />
+                            )}
+                          />
                         </Cell>
                         <Cell>
                           <Input {...register(`line_items.${i}.description`)} className="h-8" />
@@ -415,7 +505,7 @@ function EntryForm({
             </Button>
             <Button type="submit" disabled={mutation.isPending}>
               {mutation.isPending && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
-              Record order
+              {isEdit ? "Save correction" : "Record order"}
             </Button>
           </div>
         </form>
@@ -501,6 +591,47 @@ function Total({ label, value, bold }: { label: string; value: string; bold?: bo
   );
 }
 
+/**
+ * Seed the form: a stored entry when correcting, blanks when starting fresh.
+ *
+ * Every field is coerced to a string because these are all controlled inputs, and a
+ * null reaching one of them makes React switch it to uncontrolled — the field then
+ * silently stops tracking what is typed into it.
+ */
+function toFormValues(existing: ManualPoEntryDetail | undefined, partnerName: string): FormValues {
+  const e = existing?.entry;
+  const str = (v: string | null | undefined) => v ?? "";
+  return {
+    buyer_po_number: str(e?.buyer_po_number),
+    buyer_po_date: str(e?.buyer_po_date) || new Date().toISOString().slice(0, 10),
+    requested_delivery_date: str(e?.requested_delivery_date),
+    buyer_name: e ? str(e.buyer_name) : partnerName,
+    buyer_gstin: str(e?.buyer_gstin),
+    ship_to_warehouse_code: str(e?.ship_to?.warehouse_code),
+    ship_to_name: str(e?.ship_to?.name),
+    ship_to_line1: str(e?.ship_to?.line1),
+    ship_to_city: str(e?.ship_to?.city),
+    ship_to_state: str(e?.ship_to?.state),
+    ship_to_pincode: str(e?.ship_to?.pincode),
+    ship_to_gstin: str(e?.ship_to?.gstin),
+    notes: str(e?.notes),
+    line_items: e?.line_items?.length
+      ? e.line_items.map((l) => ({
+          buyer_sku: str(l.buyer_sku),
+          b1_item_code: str(l.b1_item_code),
+          description: str(l.description),
+          hsn_code: str(l.hsn_code),
+          buyer_uom: str(l.buyer_uom),
+          ordered_qty: str(l.ordered_qty),
+          unit_price: str(l.unit_price),
+          gst_rate: str(l.gst_rate),
+          discount_pct: str(l.discount_pct),
+        }))
+      : [{ ...EMPTY_LINE }],
+  };
+}
+
+
 /** Blank optional fields are dropped rather than sent as "" — the API forbids extras
  *  and an empty string is not the same as "not supplied". */
 function toEntry(values: FormValues, partnerCode: string): ManualPoEntry {
@@ -527,6 +658,7 @@ function toEntry(values: FormValues, partnerCode: string): ManualPoEntry {
       ordered_qty: line.ordered_qty.trim(),
       unit_price: line.unit_price.trim(),
       gst_rate: line.gst_rate.trim() === "" ? "0" : line.gst_rate.trim(),
+      b1_item_code: clean(line.b1_item_code),
       description: clean(line.description),
       hsn_code: clean(line.hsn_code),
       buyer_uom: clean(line.buyer_uom),

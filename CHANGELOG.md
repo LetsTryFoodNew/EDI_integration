@@ -1,5 +1,43 @@
 # Changelog
 
+## A keyed-in order can be corrected after it is submitted (2026-08-26)
+
+We author manual orders, so a typo in one is ours to fix — unlike a partner's PO,
+where our copy has to keep matching the one they hold. The Manual Inbox now has an
+Edit action on every parsed order, prefilled with what was originally typed.
+
+**A correction is a new revision, not an in-place edit.** `raw_messages` is the
+immutable record of what arrived and the existing versioning supersedes the previous
+version, so the 500 someone meant to type as 50 stays visible next to the fix rather
+than being quietly overwritten.
+
+**Editing stops when the order leaves the building.** Up to the SAP push it exists
+only here and a correction costs nothing. Once there is a Sales Order, an invoice or
+an ASN against it, someone else is already acting on that document and a quiet edit
+would leave the two disagreeing with no trace of which is right. Checked on the read
+*and* on the write, because a form can have been open since before the push.
+
+**Lines can name their SAP item directly.** This is what made the feature usable at
+all: a manual partner has no catalogue for a buyer SKU to be mapped from, so every
+LOTS line came back `E002_SKU_UNRESOLVED` and no hand-keyed order could ever be
+pushed. The operator picks from the material master through a combobox — never free
+text, because an item code typed from memory is how Blinkit PO 2873410040494 reached
+SAP naming FG00460 and B1 rejected all eighteen lines with ODBC -2028.
+
+`SkuMappingRule` accepts a line that already names an item, and this is deliberately
+*not* a hole in it. What the rule refuses to do is guess; no partner parser sets
+`sap_material_no`, so the only way one is present before validation is that a person
+chose it. The code is still checked against master data, so a stale or mistyped one is
+rejected rather than posted.
+
+Found while testing: `_save_canonical_po` dropped `sap_material_no` on the way to the
+database, so the operator's explicit choice was discarded and the PO came back
+unmapped anyway.
+
+**Worth knowing:** `FG00460` is present in our local `material_master` but absent from
+SAP. That drift is why the Blinkit PO reached the Service Layer at all — validation
+checks our copy, and our copy said the item was fine. A re-sync would clear it.
+
 ## The partner's own PO now travels with the ASN and the invoice (2026-08-26)
 
 An ASN carrying only a tax invoice still leaves the retailer's accounts desk to go and
