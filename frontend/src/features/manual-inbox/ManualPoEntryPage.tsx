@@ -15,7 +15,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import EmptyState from "@/components/shared/EmptyState";
 import { createManualEntry, fetchManualEntry, fetchManualPartners } from "./api";
-import type { ManualPoEntry, ManualPoEntryDetail } from "./api";
+import type { CatalogueItem, ManualPoEntry, ManualPoEntryDetail } from "./api";
 import ItemPicker from "./components/ItemPicker";
 
 // The operator types quantity, price and one GST rate. Everything arithmetic — the
@@ -203,6 +203,7 @@ function EntryForm({
     handleSubmit,
     reset,
     setValue,
+    getValues,
     formState: { errors },
   } = useForm<FormValues>({
     resolver: zodResolver(formSchema),
@@ -213,6 +214,39 @@ function EntryForm({
 
   const { fields, append, remove } = useFieldArray({ control, name: "line_items" });
   const watched = useWatch({ control, name: "line_items" });
+
+  /**
+   * Fill a line from the catalogue row that was just picked.
+   *
+   * Everything master data knows is written — the partner's own buyer SKU, the
+   * contracted unit price, description, HSN, UoM and GST rate. Quantity is the one
+   * field left alone, because nothing in master data knows how many were ordered;
+   * that is the only number genuinely on the piece of paper in front of the operator.
+   *
+   * Blank fields are filled and typed ones are kept. Picking an item is a request for
+   * its defaults, not an instruction to discard work — but re-picking a *different*
+   * item on a line that already had one means the operator changed their mind, so
+   * that case overwrites rather than leaving the previous item's price behind.
+   */
+  function fillLineFrom(index: number, item: CatalogueItem) {
+    const current = getValues(`line_items.${index}`);
+    const switching = !!current.b1_item_code && current.b1_item_code !== item.b1_item_code;
+    const put = (
+      field: "buyer_sku" | "description" | "hsn_code" | "buyer_uom" | "unit_price" | "gst_rate",
+      value: string | null | undefined,
+    ) => {
+      if (value === null || value === undefined || value === "") return;
+      if (!switching && String(current[field] ?? "").trim() !== "") return;
+      setValue(`line_items.${index}.${field}`, String(value), { shouldValidate: true });
+    };
+
+    put("buyer_sku", item.buyer_sku);
+    put("description", item.item_name);
+    put("hsn_code", item.hsn_code);
+    put("buyer_uom", item.buyer_uom);
+    put("unit_price", item.unit_price);
+    put("gst_rate", item.gst_rate);
+  }
 
   const totals = useMemo(() => {
     let taxable = 0;
@@ -403,21 +437,12 @@ function EntryForm({
                             name={`line_items.${i}.b1_item_code`}
                             render={({ field }) => (
                               <ItemPicker
+                                partnerCode={partnerCode}
                                 value={field.value}
                                 onChange={field.onChange}
-                                onPick={(m) => {
-                                  // Fill the blanks the item already knows, without
-                                  // overwriting anything the operator has typed.
-                                  field.onChange(m.item_code);
-                                  if (!line?.description) {
-                                    setValue(`line_items.${i}.description`, m.item_name);
-                                  }
-                                  if (!line?.hsn_code && m.hsn) {
-                                    setValue(`line_items.${i}.hsn_code`, m.hsn);
-                                  }
-                                  if (!line?.buyer_uom && m.invntry_uom) {
-                                    setValue(`line_items.${i}.buyer_uom`, m.invntry_uom);
-                                  }
+                                onPick={(item) => {
+                                  field.onChange(item.b1_item_code);
+                                  fillLineFrom(i, item);
                                 }}
                               />
                             )}

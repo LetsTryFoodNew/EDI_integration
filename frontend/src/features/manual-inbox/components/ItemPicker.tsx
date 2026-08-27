@@ -2,7 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Check, X } from "lucide-react";
 import { Input } from "@/components/ui/input";
-import { searchMaterials } from "../api";
+import { Badge } from "@/components/ui/badge";
+import { searchCatalogue } from "../api";
+import type { CatalogueItem } from "../api";
 
 /**
  * Pick the SAP item a keyed-in line ships.
@@ -16,18 +18,15 @@ import { searchMaterials } from "../api";
  * rows and is never pulled down whole.
  */
 export default function ItemPicker({
+  partnerCode,
   value,
   onChange,
   onPick,
 }: {
+  partnerCode: string;
   value: string;
   onChange: (code: string) => void;
-  onPick?: (m: {
-    item_code: string;
-    item_name: string;
-    hsn: string | null;
-    invntry_uom: string;
-  }) => void;
+  onPick?: (item: CatalogueItem) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [term, setTerm] = useState("");
@@ -50,8 +49,8 @@ export default function ItemPicker({
   }, []);
 
   const { data: options, isFetching } = useQuery({
-    queryKey: ["materials", debounced],
-    queryFn: () => searchMaterials(debounced),
+    queryKey: ["manual-catalogue", partnerCode, debounced],
+    queryFn: () => searchCatalogue(partnerCode, debounced),
     enabled: open,
     staleTime: 60_000,
   });
@@ -92,29 +91,43 @@ export default function ItemPicker({
             <p className="px-3 py-2 text-xs text-muted-foreground">
               {debounced
                 ? `No item matches “${debounced}”.`
-                : "Type to search the material master."}
+                : "Type to search this partner's items."}
             </p>
           ) : (
             options.map((m) => (
               <button
-                key={m.id}
+                key={m.b1_item_code}
                 type="button"
                 className="w-full text-left px-3 py-1.5 hover:bg-accent flex items-start gap-2"
                 onClick={() => {
-                  onChange(m.item_code);
+                  onChange(m.b1_item_code);
                   onPick?.(m);
                   setOpen(false);
                 }}
               >
-                {m.item_code === value ? (
+                {m.b1_item_code === value ? (
                   <Check className="h-3.5 w-3.5 mt-0.5 shrink-0" />
                 ) : (
                   <span className="w-3.5 shrink-0" />
                 )}
-                <span className="min-w-0">
-                  <span className="font-mono text-xs">{m.item_code}</span>
+                <span className="min-w-0 flex-1">
+                  <span className="flex items-center gap-1.5">
+                    <span className="font-mono text-xs">{m.b1_item_code}</span>
+                    {m.mapped ? (
+                      <Badge variant="secondary" className="text-[10px] px-1 py-0">
+                        {m.buyer_sku}
+                      </Badge>
+                    ) : (
+                      // Says plainly that only item data will be filled, so a blank
+                      // unit price afterwards is expected rather than a bug.
+                      <Badge variant="outline" className="text-[10px] px-1 py-0">
+                        not mapped
+                      </Badge>
+                    )}
+                  </span>
                   <span className="block text-xs text-muted-foreground truncate">
                     {m.item_name}
+                    {m.unit_price && ` · ₹${m.unit_price}`}
                   </span>
                 </span>
               </button>

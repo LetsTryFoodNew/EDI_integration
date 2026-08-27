@@ -278,3 +278,81 @@ class TestSkuRulePreassigned:
         violations = self._run("FG00349", self._material(frozen_for=True))
         assert len(violations) == 1
         assert "inactive or frozen" in violations[0].message
+
+
+class TestCatalogueMerge:
+    """
+    What a picked line gets filled with.
+
+    Two sources overlap. The mapping is the partner-specific fact — a contracted unit
+    price for LOTS is not the price for anyone else, and the UoM they order in is
+    theirs — so it wins. Item data fills the rest, because HSN, GST rate, MRP, EAN and
+    case size are properties of the product whoever is buying it.
+    """
+
+    @staticmethod
+    def _material(**kw):
+        from types import SimpleNamespace
+
+        fields = {
+            "item_code": "FG00319", "item_name": "Let's Try Lite Snacks Sticks 57g",
+            "hsn": "21069099", "tax_rate": None, "mrp": 60, "ean_code": "8906161391365",
+            "case_size": 36, "invntry_uom": "EA", "sal_unit_msr": None,
+        }
+        return SimpleNamespace(**{**fields, **kw})
+
+    @staticmethod
+    def _mapping(**kw):
+        from types import SimpleNamespace
+
+        fields = {"buyer_sku": "104584368", "buyer_uom": "PCS", "unit_price": "31.43"}
+        return SimpleNamespace(**{**fields, **kw})
+
+    def _row(self, material=None, mapping=None):
+        from app.api.routes.manual_inbox import _catalogue_row
+
+        return _catalogue_row(material or self._material(), mapping)
+
+    def test_a_mapped_item_carries_the_partners_own_fields(self) -> None:
+        row = self._row(mapping=self._mapping())
+        assert row.mapped is True
+        assert row.buyer_sku == "104584368"
+        assert str(row.unit_price) == "31.43"
+        assert row.buyer_uom == "PCS"
+
+    def test_item_data_fills_the_rest(self) -> None:
+        row = self._row(mapping=self._mapping())
+        assert row.hsn_code == "21069099"
+        assert row.ean_code == "8906161391365"
+        assert row.case_size == 36
+
+    def test_an_unmapped_item_is_still_pickable(self) -> None:
+        # A hand-keyed order is often for something never sold to this partner before;
+        # hiding it would send the operator to Master Data mid-entry.
+        row = self._row()
+        assert row.mapped is False
+        assert row.b1_item_code == "FG00319"
+        assert row.buyer_sku is None
+        assert row.unit_price is None
+
+    def test_an_unmapped_item_falls_back_to_the_item_uom(self) -> None:
+        assert self._row().buyer_uom == "EA"
+        assert self._row(material=self._material(sal_unit_msr="BOX")).buyer_uom == "BOX"
+
+    def test_a_mapping_uom_beats_the_item_uom(self) -> None:
+        row = self._row(mapping=self._mapping(buyer_uom="PCS"))
+        assert row.buyer_uom == "PCS"
+
+    def test_a_mapping_with_no_uom_falls_through(self) -> None:
+        row = self._row(mapping=self._mapping(buyer_uom=None))
+        assert row.buyer_uom == "EA"
+
+    def test_quantity_is_never_supplied(self) -> None:
+        # Nothing in master data knows how many were ordered — it is the one number
+        # genuinely on the paper in front of the operator.
+        assert not hasattr(self._row(mapping=self._mapping()), "ordered_qty")
+
+    def test_a_missing_gst_rate_stays_absent_rather_than_guessed(self) -> None:
+        # material_master.tax_rate is not populated by the item sync today. Filling a
+        # rate we do not know would misfile GST on a real order.
+        assert self._row(mapping=self._mapping()).gst_rate is None

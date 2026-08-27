@@ -1,5 +1,38 @@
 # Changelog
 
+## Picking an item fills the line from that partner's own master data (2026-08-26)
+
+The item picker searched the material master, so choosing an item filled the
+description and left the operator to type the buyer SKU, the UoM and — the one that
+matters — the unit price, all of which are already recorded against that partner.
+
+`GET /api/manual-inbox/catalogue` returns what a partner actually buys: their SKU
+mappings first, carrying the things only a mapping knows (their buyer SKU, the
+contracted unit price, the UoM they order in), then items the master knows but this
+partner has never been sold. Both in one list, because a hand-keyed order is often for
+something new to them and hiding it would send the operator to Master Data mid-entry.
+Unmapped rows are labelled as such, so a blank price afterwards reads as expected
+rather than as a bug.
+
+Where the two sources overlap the mapping wins — a contracted price for LOTS is not
+the price for anyone else. Item data fills the rest, since HSN, MRP, EAN and case size
+are properties of the product whoever is buying it.
+
+**Quantity is the one field never filled.** Nothing in master data knows how many were
+ordered; it is the only number genuinely on the paper in front of the operator.
+
+Blank fields are filled and typed ones kept — picking an item asks for its defaults,
+not for your work to be discarded. Re-picking a *different* item on a line that
+already had one does overwrite, because that is someone changing their mind and the
+previous item's price must not be left behind.
+
+The picker also searches by buyer SKU, so `104584368` and `FG00319` both find the same
+row and the operator can work from whichever number the order quotes.
+
+**Not filled today: the GST rate.** `material_master.tax_rate` and `vat_group_sa` are
+empty for all 182 items — the item sync does not bring tax data across. A rate we do
+not know is left alone rather than guessed, and the form's 5% default stands.
+
 ## A keyed-in order can be corrected after it is submitted (2026-08-26)
 
 We author manual orders, so a typo in one is ours to fix — unlike a partner's PO,

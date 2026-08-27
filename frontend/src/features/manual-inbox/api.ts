@@ -83,21 +83,31 @@ export async function fetchManualEntry(poId: string): Promise<ManualPoEntryDetai
   return res.data;
 }
 
-export interface MaterialOption {
-  id: string;
-  item_code: string;
+export interface CatalogueItem {
+  b1_item_code: string;
   item_name: string;
-  hsn: string | null;
-  invntry_uom: string;
+  /** True when this partner has a SKU mapping for the item, so their own buyer SKU,
+   *  contracted price and UoM come with it. False for an item the master knows but
+   *  this partner has never been sold. */
+  mapped: boolean;
+  buyer_sku: string | null;
+  buyer_uom: string | null;
+  unit_price: string | null;
+  hsn_code: string | null;
+  gst_rate: string | null;
   mrp: string | null;
   ean_code: string | null;
+  case_size: number | null;
 }
 
-/** Item picker for a keyed-in line. Server-side search: the master runs to
- *  thousands of rows, so it is never pulled down whole. */
-export async function searchMaterials(search: string): Promise<MaterialOption[]> {
-  const res = await apiClient.get<{ items: MaterialOption[] }>("/api/master-data/materials", {
-    params: { search: search || undefined, valid_for: 1, limit: 20 },
+/** What this partner buys. Server-side search: the master runs to thousands of rows,
+ *  so it is never pulled down whole. */
+export async function searchCatalogue(
+  partnerCode: string,
+  search: string,
+): Promise<CatalogueItem[]> {
+  const res = await apiClient.get<{ items: CatalogueItem[] }>("/api/manual-inbox/catalogue", {
+    params: { partner_code: partnerCode, search: search || undefined, limit: 20 },
   });
   return res.data.items;
 }

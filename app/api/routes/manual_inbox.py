@@ -15,6 +15,7 @@ copy of that logic would drift.
 GET  /api/manual-inbox/partners      — MANUAL + PORTAL partners with message counts
 POST /api/manual-inbox/entries       — key in one purchase order by hand
 GET  /api/manual-inbox/entries/{id}  — read one back for correction
+GET  /api/manual-inbox/catalogue     — what this partner buys, for the line picker
 
 A keyed-in order stays correctable because we authored it: a typo in a quantity is
 ours to fix, unlike a partner's PO where our copy has to keep matching theirs. A
@@ -45,6 +46,7 @@ from app.api.routes.auth import get_current_user
 from app.models._enums import SourceChannel
 from app.schemas.api import (
     InboxPartnerSummary,
+    ManualCatalogueItem,
     ManualPoEntryDetail,
     ManualPoEntryRequest,
     ManualPoEntryResponse,
@@ -424,4 +426,120 @@ def read_manual_entry(
         editable=reason is None,
         locked_reason=reason,
         entry=entry,
+    )
+
+
+@router.get("/catalogue", response_model=PaginatedResponse[ManualCatalogueItem])
+def manual_catalogue(
+    partner_code: str = Query(..., description="Partner whose catalogue to search"),
+    search: str | None = Query(None),
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_sync_db),  # noqa: B008
+    _current_user: UserResponse = Depends(get_current_user),  # noqa: B008
+) -> PaginatedResponse[ManualCatalogueItem]:
+    """
+    What this partner buys, for the line picker on the manual entry form.
+
+    Their own SKU mappings come first and carry the things only the mapping knows —
+    their buyer SKU, the contracted unit price, the UoM they order in — so choosing an
+    item fills the line the way that partner actually buys it rather than with generic
+    item data. Items with no mapping for this partner follow, because a hand-keyed
+    order is often for something never sold to them before and refusing to show it
+    would send the operator back to Master Data mid-entry.
+
+    Ordering matters: a mapped row is the better answer whenever one exists, and
+    putting the two groups in one response lets the picker stay a single list.
+    """
+    from sqlalchemy import func, or_, select
+
+    from app.models.master_data import MaterialMaster, SkuMapping, TradingPartner
+
+    code = partner_code.upper()
+    partner = db.execute(
+        select(TradingPartner).where(
+            TradingPartner.code == code, TradingPartner.deleted_at.is_(None)
+        )
+    ).scalar_one_or_none()
+    if partner is None:
+        raise HTTPException(status_code=404, detail=f"No trading partner {code!r}")
+
+    pattern = f"%{search.strip()}%" if search and search.strip() else None
+
+    mapped_q = (
+        select(SkuMapping, MaterialMaster)
+        .join(MaterialMaster, SkuMapping.material_id == MaterialMaster.id)
+        .where(
+            SkuMapping.trading_partner_id == partner.id,
+            SkuMapping.deleted_at.is_(None),
+            SkuMapping.is_active.is_(True),
+            MaterialMaster.deleted_at.is_(None),
+        )
+    )
+    if pattern:
+        mapped_q = mapped_q.where(or_(
+            SkuMapping.buyer_sku.ilike(pattern),
+            SkuMapping.buyer_sku_description.ilike(pattern),
+            MaterialMaster.item_code.ilike(pattern),
+            MaterialMaster.item_name.ilike(pattern),
+            MaterialMaster.ean_code.ilike(pattern),
+        ))
+
+    items: list[ManualCatalogueItem] = [
+        _catalogue_row(material, mapping)
+        for mapping, material in db.execute(
+            mapped_q.order_by(MaterialMaster.item_name).limit(limit)
+        ).all()
+    ]
+    seen = {row.b1_item_code for row in items}
+
+    # Fill the rest of the page with unmapped items so one search covers both.
+    remaining = limit - len(items)
+    if remaining > 0:
+        loose_q = select(MaterialMaster).where(
+            MaterialMaster.deleted_at.is_(None),
+            MaterialMaster.valid_for == 1,
+            MaterialMaster.frozen_for.is_(False),
+        )
+        if pattern:
+            loose_q = loose_q.where(or_(
+                MaterialMaster.item_code.ilike(pattern),
+                MaterialMaster.item_name.ilike(pattern),
+                MaterialMaster.ean_code.ilike(pattern),
+            ))
+        if seen:
+            loose_q = loose_q.where(MaterialMaster.item_code.notin_(seen))
+        items += [
+            _catalogue_row(m, None)
+            for m in db.execute(
+                loose_q.order_by(MaterialMaster.item_name).limit(remaining)
+            ).scalars().all()
+        ]
+
+    total = db.execute(
+        select(func.count()).select_from(mapped_q.subquery())
+    ).scalar_one()
+    return PaginatedResponse(items=items, total=max(total, len(items)), limit=limit, offset=0)
+
+
+def _catalogue_row(material: Any, mapping: Any | None) -> ManualCatalogueItem:
+    """
+    Merge item data with this partner's mapping.
+
+    The mapping wins where the two overlap, because it is the partner-specific fact:
+    a contracted unit price for LOTS is not the price for anyone else, and the UoM
+    they order in is theirs. Item data fills the rest — HSN, GST rate, MRP, EAN and
+    case size are properties of the product whoever is buying it.
+    """
+    return ManualCatalogueItem(
+        b1_item_code=material.item_code,
+        item_name=material.item_name,
+        mapped=mapping is not None,
+        buyer_sku=getattr(mapping, "buyer_sku", None),
+        buyer_uom=getattr(mapping, "buyer_uom", None) or material.sal_unit_msr or material.invntry_uom,
+        unit_price=getattr(mapping, "unit_price", None),
+        hsn_code=material.hsn,
+        gst_rate=material.tax_rate,
+        mrp=material.mrp,
+        ean_code=material.ean_code,
+        case_size=material.case_size,
     )

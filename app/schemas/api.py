@@ -1512,3 +1512,32 @@ class ManualPoEntryDetail(BaseModel):
     #: Present when `editable` is false — why, in a sentence the operator can act on.
     locked_reason: str | None = None
     entry: ManualPoEntryRequest
+
+
+class ManualCatalogueItem(BaseModel):
+    """
+    One pickable line for a hand-keyed order, with every field the form can fill in.
+
+    Two kinds of row, distinguished by `mapped`:
+
+      mapped=True   this partner has a SKU mapping for the item, so their own buyer
+                    SKU, contracted unit price and buyer UoM come with it
+      mapped=False  the item exists in the material master but this partner has no
+                    mapping — still pickable, since a manual order is often for
+                    something never sold to them before, but only item data is known
+
+    Everything here is a default the operator can overwrite. The one field deliberately
+    absent is quantity: nothing in master data knows how many were ordered.
+    """
+    b1_item_code: str
+    item_name: str
+    mapped: bool
+
+    buyer_sku: str | None = None
+    buyer_uom: str | None = None
+    unit_price: Decimal | None = None
+    hsn_code: str | None = None
+    gst_rate: Decimal | None = None
+    mrp: Decimal | None = None
+    ean_code: str | None = None
+    case_size: int | None = None
