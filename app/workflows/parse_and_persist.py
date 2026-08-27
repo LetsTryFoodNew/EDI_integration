@@ -275,6 +275,24 @@ def _run_parser(raw: Any, partner: Any) -> Any:
     if parser:
         # Re-run to get the actual errors from the structured parser
         return parser.parse(raw)
+
+    # A hand-keyed entry needs no partner parser, so reaching here with one means the
+    # payload-based routing above did not run — the deployed code is behind the code
+    # that wrote this message. Saying "no parser registered for LOTS" instead sends
+    # whoever reads it looking for a partner parser that was never supposed to exist,
+    # which is exactly how a stale worker cost an afternoon.
+    if isinstance(getattr(raw, "payload", None), dict) and raw.payload.get("_entry_type"):
+        return ParseResult(
+            success=False,
+            errors=[
+                f"This is a hand-keyed entry ({raw.payload.get('_entry_type')}) but no "
+                "manual parser handled it. The running code is missing "
+                "app/parsers/manual_parser.py or the routing in parse_and_persist — "
+                "rebuild and restart the workers."
+            ],
+            parser_name="none",
+        )
+
     return ParseResult(
         success=False,
         errors=[f"No parser registered for partner '{partner.code}'"],

@@ -1,5 +1,38 @@
 # Changelog
 
+## Every edit of a keyed-in order failed to parse (2026-08-26)
+
+Saving a change to a line came back "parse failed" every time, while the original
+entry had gone through. The form was fine; nothing had been entered wrongly.
+
+The workers were running an image built before `manual_parser.py` existed. Backend
+services in `docker-compose.yml` bind-mount only `./credentials`, so the code they run
+comes entirely from the baked image — and the manual parser had been reaching the
+running system by hot-patch into the `api` container alone. `api` parses nothing:
+`POST /entries` enqueues to the `ingest` queue, and `worker-ingest` had neither the
+parser nor the payload routing that reaches it. Every entry fell through to the
+partner registry, which has no parser for LOTS.
+
+The reason edits looked worse than first entries is an artefact of how it was tested,
+not of the code: a first entry that had also been parsed in-process inside `api`
+recorded SUCCESS, so only the revision showed the failure. Through the UI both fail
+equally.
+
+Rebuilt and restarted. Verified through the real path — POST, worker parses, no
+in-process shortcut:
+
+    submit    201 queued=True   worker parse_status=SUCCESS
+    save edit 201 rev=2         worker parse_status=SUCCESS
+      v1 SUPERSEDED  qty=36  item=FG00319  price=31.43  total=1188.05
+      v2 VALIDATED   qty=72  item=FG00325  price=29.33  total=2217.35
+
+**The message it failed with was the real cost.** "No parser registered for partner
+'LOTS'" sends whoever reads it hunting for a partner parser that was never supposed to
+exist — a hand-keyed order needs none. A raw message carrying `_entry_type` that
+reaches the fallback now says what is actually wrong: the running code is missing the
+manual parser, rebuild and restart the workers. No code guard can protect against a
+worker running yesterday's image, but the error it produces can at least point at it.
+
 ## Picking an item fills the line from that partner's own master data (2026-08-26)
 
 The item picker searched the material master, so choosing an item filled the

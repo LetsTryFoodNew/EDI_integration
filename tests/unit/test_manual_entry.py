@@ -356,3 +356,38 @@ class TestCatalogueMerge:
         # material_master.tax_rate is not populated by the item sync today. Filling a
         # rate we do not know would misfile GST on a real order.
         assert self._row(mapping=self._mapping()).gst_rate is None
+
+
+class TestStaleDeployMessage:
+    """
+    What a hand-keyed entry reports when the manual parser is not deployed.
+
+    Every revision of every LOTS order failed with "No parser registered for partner
+    'LOTS'" — a message that sends whoever reads it hunting for a partner parser that
+    was never supposed to exist. The cause was a worker running an image built before
+    manual_parser.py existed, and the message pointed nowhere near it.
+    """
+
+    @staticmethod
+    def _fallback(payload):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from app.workflows.parse_and_persist import _run_parser
+
+        raw = SimpleNamespace(id=uuid4(), payload=payload, external_id="x")
+        partner = SimpleNamespace(code="LOTS", api_config=None)
+        # No partner parser, and the manual routing has not run — the stale-deploy shape.
+        with patch("app.parsers.registry.get_parser", return_value=None), \
+             patch("app.parsers.manual_parser.is_manual_entry", return_value=False):
+            return _run_parser(raw, partner)
+
+    def test_names_the_real_cause(self) -> None:
+        result = self._fallback({"_entry_type": "MANUAL_PO", "buyer_po_number": "X"})
+        assert result.success is False
+        assert "manual parser" in result.errors[0]
+        assert "rebuild and restart the workers" in result.errors[0]
+
+    def test_a_genuine_partner_gap_still_reads_that_way(self) -> None:
+        result = self._fallback({"some": "partner payload"})
+        assert "No parser registered for partner 'LOTS'" in result.errors[0]
