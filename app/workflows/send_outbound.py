@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -36,6 +37,9 @@ log = structlog.get_logger(__name__)
 _MAX_ATTEMPTS = 5
 # Delay in seconds before each retry (indexed by attempt_count after failure)
 _RETRY_DELAYS_S = [60, 300, 1800, 7200, 21600]
+# Gmail's hard limit is 25 MB per message; stay under it with room for the MIME
+# encoding overhead, which base64 puts at roughly a third on top of the raw bytes.
+_MAX_ATTACHMENT_BYTES = 18 * 1024 * 1024
 
 
 @dataclass
@@ -236,9 +240,46 @@ def _with_attachments(session: Session, msg: Any) -> dict[str, Any]:
     """
     payload = dict(msg.payload or {})
     invoice_number = payload.pop("attach_invoice", None)
-    if not invoice_number:
+    want_po_source = payload.pop("attach_po_source", False)
+    if not invoice_number and not want_po_source:
         return payload
 
+    files: list[dict[str, Any]] = []
+    if invoice_number:
+        files += _invoice_attachment(session, invoice_number)
+    if want_po_source:
+        files += _po_source_attachments(session, msg)
+
+    if not files:
+        return payload
+
+    # Gmail refuses a message over 25 MB and answers with a size error rather than a
+    # partial send, so an oversized set is trimmed here instead: a delivery note that
+    # arrives with one document beats one that does not arrive at all.
+    kept: list[dict[str, Any]] = []
+    total = 0
+    for f in files:
+        size = len(f["content"])
+        if total + size > _MAX_ATTACHMENT_BYTES:
+            log.warning(
+                "outbound.attachment_dropped_too_large",
+                filename=f["filename"], bytes=size, running_total=total,
+            )
+            continue
+        kept.append(f)
+        total += size
+
+    payload["attachments"] = kept
+    log.info(
+        "outbound.attachments_rendered",
+        files=[f["filename"] for f in kept],
+        bytes=total,
+    )
+    return payload
+
+
+def _invoice_attachment(session: Session, invoice_number: str) -> list[dict[str, Any]]:
+    """The GST tax invoice, rendered fresh from the invoice record."""
     from sqlalchemy import select
 
     from app.models.invoice import EdiInvoice
@@ -249,7 +290,7 @@ def _with_attachments(session: Session, msg: Any) -> dict[str, Any]:
     ).scalar_one_or_none()
     if invoice is None:
         log.warning("outbound.attachment_missing", invoice_number=invoice_number)
-        return payload
+        return []
 
     try:
         pdf = render_invoice_pdf(session, invoice)
@@ -257,19 +298,88 @@ def _with_attachments(session: Session, msg: Any) -> dict[str, Any]:
         log.exception(
             "outbound.attachment_failed", invoice_number=invoice_number, error=str(exc)
         )
-        return payload
+        return []
 
-    payload["attachments"] = [{
+    return [{
         "filename": f"Invoice-{invoice_number}.pdf",
         "mime_type": "application/pdf",
         "content": pdf,
     }]
-    log.info(
-        "outbound.attachment_rendered",
-        invoice_number=invoice_number,
-        bytes=len(pdf),
-    )
-    return payload
+
+
+def _po_source_attachments(session: Session, msg: Any) -> list[dict[str, Any]]:
+    """
+    The order exactly as the partner sent it.
+
+    Read back from wherever ingestion stored it rather than re-rendered, because the
+    point is to hand their accounts desk the same document they issued — a
+    reconstruction of it would invite an argument about which one is authoritative.
+    A partner whose orders arrive over an API has no such file, and a manually keyed
+    order has none either; both simply contribute nothing.
+    """
+    from app.adapters.storage import fetch_attachment
+    from app.models.edi_po import EdiPurchaseOrder
+    from app.models.raw_messages import RawMessage
+
+    po = session.get(EdiPurchaseOrder, msg.po_id)
+    raw = session.get(RawMessage, po.raw_message_id) if po and po.raw_message_id else None
+    atts = (getattr(raw, "attachment_paths", None) or []) if raw else []
+
+    out: list[dict[str, Any]] = []
+    seen_ext: dict[str, int] = {}
+    for att in atts:
+        if not isinstance(att, dict):
+            continue
+        source_name = str(att.get("filename") or "purchase-order")
+        try:
+            content = fetch_attachment(att)
+        except Exception as exc:
+            # Broad on purpose: this reaches Cloudinary over the network and the local
+            # filesystem, so it can fail as an HTTP error, a timeout, a signing problem
+            # or a missing file. One unreadable source document must not cost the
+            # retailer the invoice, so every one of those is logged and skipped.
+            log.warning(
+                "outbound.po_source_unavailable", filename=source_name, error=str(exc)
+            )
+            continue
+
+        # Renamed to the PO number. Partners generate names like
+        # "DG8TMD12QLBDILJRUSF7_CREATE_OTB_PURCHASE_ORDER_ae4e21a5-814d-...xlsx",
+        # which tells an accounts desk nothing and is what they will have to find
+        # again later. A second file of the same type gets a suffix rather than
+        # overwriting the first in someone's downloads folder.
+        ext = Path(source_name).suffix.lower() or ".bin"
+        seen_ext[ext] = seen_ext.get(ext, 0) + 1
+        suffix = "" if seen_ext[ext] == 1 else f"-{seen_ext[ext]}"
+
+        out.append({
+            "filename": f"PO-{po.buyer_po_number}{suffix}{ext}",
+            "mime_type": _mime_for(ext),
+            "content": content,
+        })
+    return out
+
+
+#: Content types for the formats partners actually send us. `mimetypes.guess_type`
+#: is backed by the system mime database, and the slim container image has no entry
+#: for .xlsx — a spreadsheet went out as application/octet-stream, which mail clients
+#: will not preview and some label as an unknown binary.
+_MIME_BY_EXT = {
+    ".pdf": "application/pdf",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".xls": "application/vnd.ms-excel",
+    ".csv": "text/csv",
+    ".txt": "text/plain",
+    ".xml": "application/xml",
+    ".json": "application/json",
+    ".zip": "application/zip",
+}
+
+
+def _mime_for(ext: str) -> str:
+    import mimetypes
+
+    return _MIME_BY_EXT.get(ext) or mimetypes.guess_type(f"x{ext}")[0] or "application/octet-stream"
 
 def _check_sla(msg: object, partner: object) -> None:
     """Log a warning if the ACK SLA deadline has passed."""

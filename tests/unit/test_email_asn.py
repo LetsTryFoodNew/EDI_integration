@@ -227,3 +227,141 @@ class TestMimeAssembly:
             {"filename": "x.pdf", "mime_type": "application/pdf", "content": b"x"},
         ]})
         assert "attachment" in msg.get_payload()[1]["Content-Disposition"]
+
+
+class TestPoSourceAttachment:
+    """
+    The order as the partner sent it, attached back beside the invoice.
+
+    Read from wherever ingestion stored it rather than re-rendered: the point is to
+    hand their accounts desk the same document they issued, and a reconstruction would
+    invite an argument about which copy is authoritative.
+    """
+
+    def test_envelope_asks_for_the_source_po(self) -> None:
+        payload, _ = build()
+        assert payload["attach_po_source"] is True
+
+    def test_the_body_mentions_both_documents(self) -> None:
+        payload, _ = build()
+        for part in ("body_text", "body_html"):
+            assert "tax invoice" in payload[part]
+            assert "purchase order" in payload[part]
+
+
+class TestAttachmentAssembly:
+    """`_with_attachments` — what actually ends up on the message."""
+
+    @staticmethod
+    def _run(monkeypatch, *, invoice_pdf=b"%PDF-inv", sources=(), fetch_error=False):
+        import app.workflows.send_outbound as so
+
+        msg = SimpleNamespace(
+            po_id="po-1",
+            payload={"to": "a@b.in", "attach_invoice": "INV-1", "attach_po_source": True},
+        )
+        monkeypatch.setattr(
+            so, "_invoice_attachment",
+            lambda *a: ([{"filename": "Invoice-INV-1.pdf",
+                          "mime_type": "application/pdf",
+                          "content": invoice_pdf}] if invoice_pdf else []),
+        )
+
+        def fake_sources(session, message):
+            if fetch_error:
+                return []
+            return [{"filename": f"PO-X-{n}", "mime_type": "application/pdf",
+                     "content": c} for n, c in sources]
+
+        monkeypatch.setattr(so, "_po_source_attachments", fake_sources)
+        return so._with_attachments(object(), msg)
+
+    def test_both_documents_are_attached(self, monkeypatch) -> None:
+        payload = self._run(monkeypatch, sources=[("po.pdf", b"%PDF-po")])
+        names = [a["filename"] for a in payload["attachments"]]
+        assert names == ["Invoice-INV-1.pdf", "PO-X-po.pdf"]
+
+    def test_request_keys_do_not_reach_the_adapter(self, monkeypatch) -> None:
+        # They are instructions to this function, not part of the email.
+        payload = self._run(monkeypatch, sources=[("po.pdf", b"x")])
+        assert "attach_invoice" not in payload
+        assert "attach_po_source" not in payload
+
+    def test_a_missing_source_still_sends_the_invoice(self, monkeypatch) -> None:
+        # An unreadable PO copy must not cost the retailer the invoice.
+        payload = self._run(monkeypatch, fetch_error=True)
+        assert [a["filename"] for a in payload["attachments"]] == ["Invoice-INV-1.pdf"]
+
+    def test_a_failed_invoice_render_still_sends_the_po(self, monkeypatch) -> None:
+        payload = self._run(monkeypatch, invoice_pdf=b"", sources=[("po.pdf", b"y")])
+        assert [a["filename"] for a in payload["attachments"]] == ["PO-X-po.pdf"]
+
+    def test_nothing_renderable_leaves_the_payload_alone(self, monkeypatch) -> None:
+        payload = self._run(monkeypatch, invoice_pdf=b"")
+        assert "attachments" not in payload
+        assert payload["to"] == "a@b.in"
+
+    def test_oversized_files_are_dropped_not_sent(self, monkeypatch) -> None:
+        # Gmail refuses a message over 25 MB outright rather than sending part of it,
+        # so a delivery note carrying one document beats one that never arrives.
+        import app.workflows.send_outbound as so
+
+        huge = b"x" * (so._MAX_ATTACHMENT_BYTES + 1)
+        payload = self._run(monkeypatch, sources=[("huge.pdf", huge)])
+        assert [a["filename"] for a in payload["attachments"]] == ["Invoice-INV-1.pdf"]
+
+
+class TestSourceFileNaming:
+    """
+    What the retailer's accounts desk actually sees in their downloads folder.
+
+    Partners generate names like
+    "DG8TMD12QLBDILJRUSF7_CREATE_OTB_PURCHASE_ORDER_ae4e21a5-814d-4c24-9bb2-...xlsx",
+    which identifies nothing and is what they will have to find again later.
+    """
+
+    @staticmethod
+    def _sources(monkeypatch, files):
+        import app.workflows.send_outbound as so
+
+        monkeypatch.setattr(so, "fetch_attachment", lambda att: b"data", raising=False)
+        monkeypatch.setattr(
+            "app.adapters.storage.fetch_attachment", lambda att: b"data", raising=False
+        )
+
+        po = SimpleNamespace(buyer_po_number="CMMPO17234", raw_message_id="raw-1")
+        raw = SimpleNamespace(attachment_paths=[{"filename": f} for f in files])
+        session = SimpleNamespace(get=lambda model, _id: po if "Purchase" in model.__name__ else raw)
+        return so._po_source_attachments(session, SimpleNamespace(po_id="po-1"))
+
+    def test_renamed_to_the_po_number(self, monkeypatch) -> None:
+        out = self._sources(monkeypatch, [
+            "DG8TMD12QLBDILJRUSF7_CREATE_OTB_PURCHASE_ORDER_ae4e21a5.pdf",
+        ])
+        assert [a["filename"] for a in out] == ["PO-CMMPO17234.pdf"]
+
+    def test_two_of_the_same_type_do_not_collide(self, monkeypatch) -> None:
+        # Otherwise the second silently replaces the first on download.
+        out = self._sources(monkeypatch, ["a.pdf", "b.pdf"])
+        assert [a["filename"] for a in out] == ["PO-CMMPO17234.pdf", "PO-CMMPO17234-2.pdf"]
+
+    def test_different_types_keep_their_own_extension(self, monkeypatch) -> None:
+        out = self._sources(monkeypatch, ["order.pdf", "order.xlsx"])
+        assert [a["filename"] for a in out] == ["PO-CMMPO17234.pdf", "PO-CMMPO17234.xlsx"]
+
+    def test_spreadsheets_get_a_real_content_type(self, monkeypatch) -> None:
+        # The slim image has no system mime entry for .xlsx, so guess_type returned
+        # octet-stream and mail clients refused to preview it.
+        out = self._sources(monkeypatch, ["order.xlsx"])
+        assert out[0]["mime_type"] == (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+    def test_pdfs_get_a_real_content_type(self, monkeypatch) -> None:
+        out = self._sources(monkeypatch, ["order.pdf"])
+        assert out[0]["mime_type"] == "application/pdf"
+
+    def test_an_unknown_extension_falls_back_rather_than_failing(self, monkeypatch) -> None:
+        out = self._sources(monkeypatch, ["order.weird"])
+        assert out[0]["mime_type"] == "application/octet-stream"
+        assert out[0]["filename"] == "PO-CMMPO17234.weird"

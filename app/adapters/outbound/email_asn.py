@@ -76,6 +76,12 @@ def build_email_asn_payload(
         # (an IRN arriving on a re-push would make a stored copy stale) and no base64
         # blob sits in the payload column.
         envelope["attach_invoice"] = invoice_number
+
+    # The order as the partner sent it, attached back alongside the invoice so their
+    # accounts desk can reconcile the three documents without going and finding the
+    # original. Same reasoning as the invoice: named here, fetched at dispatch, so
+    # nothing large or stale is stored on the message.
+    envelope["attach_po_source"] = True
     return envelope, warnings
 
 
@@ -137,7 +143,8 @@ def _text_body(
         out.append(f"{sku.ljust(width)}  {item:<10} {qty:>8}  {batch} {expiry}".rstrip())
     out += ["", f"{len(rows)} line(s) despatched."]
     if invoice_number:
-        out.append(f"The GST tax invoice {invoice_number} is attached as a PDF.")
+        out.append(f"The GST tax invoice {invoice_number} is attached as a PDF, "
+                   "along with a copy of the original purchase order.")
     out += ["", f"{_seller_name(seller)}",
             "Sent automatically by the EDI middleware — please do not reply."]
     return "\n".join(out)
@@ -183,7 +190,8 @@ def _html_body(
         f"<tbody>{rows}</tbody></table>"
         f"<p style='color:#666;margin-top:20px'>{len(lines)} line(s) despatched."
         + (f" The GST tax invoice <strong>{escape(invoice_number)}</strong> is attached "
-           "as a PDF." if invoice_number else "")
+           "as a PDF, along with a copy of the original purchase order."
+           if invoice_number else "")
         + "</p>"
         f"<p style='color:#999;font-size:12px;margin-top:24px'>{escape(_seller_name(seller))} — "
         "sent automatically by the EDI middleware, please do not reply.</p>"

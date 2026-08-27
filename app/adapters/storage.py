@@ -130,3 +130,47 @@ def _save_local(
         "mime_type": mime_type,
         "size_bytes": len(data),
     }
+
+
+class AttachmentUnavailableError(RuntimeError):
+    """A stored attachment could not be read back."""
+
+
+def fetch_attachment(att: dict[str, Any]) -> bytes:
+    """
+    Read one stored attachment back as bytes.
+
+    Cloudinary refuses public delivery of PDFs with a 401, so a stored `url` is not
+    something anything can simply GET — the original has to be pulled with API
+    credentials through a short-lived signed private-download URL. Local-disk
+    attachments (the dev fallback) are read straight off disk.
+
+    Lives here rather than in the inbox route because two callers now need it: the
+    ops "open the original" download, and the outbound mailer attaching the source PO
+    to a partner's ASN. A second copy of the Cloudinary signing dance would drift.
+    """
+    import time
+
+    import requests
+    from cloudinary.utils import private_download_url
+
+    url = str(att.get("url") or "")
+    public_id = str(att.get("public_id") or "")
+
+    if url.startswith("https://res.cloudinary.com"):
+        _ensure_cloudinary_configured()
+        signed = private_download_url(
+            public_id, "", resource_type="raw", type="upload",
+            expires_at=int(time.time()) + 300,
+        )
+        resp = requests.get(signed, timeout=60)
+        if resp.status_code != 200:
+            raise AttachmentUnavailableError(
+                f"Cloudinary download failed ({resp.status_code}) for {public_id!r}"
+            )
+        return resp.content
+
+    path = Path(public_id or url)
+    if not path.is_file():
+        raise AttachmentUnavailableError(f"Attachment file missing on disk: {path}")
+    return path.read_bytes()

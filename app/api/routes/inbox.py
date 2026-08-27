@@ -309,10 +309,10 @@ def download_attachment(
     (dev fallback) are read from disk.
     """
     import mimetypes
-    from pathlib import Path
 
     from fastapi import Response
 
+    from app.adapters.storage import AttachmentUnavailableError, fetch_attachment
     from app.models.raw_messages import RawMessage
 
     msg = db.get(RawMessage, message_id)
@@ -325,16 +325,11 @@ def download_attachment(
 
     att = atts[index]
     filename = att.get("filename") or "attachment"
-    url = att.get("url") or ""
-    public_id = att.get("public_id") or ""
 
-    if url.startswith("https://res.cloudinary.com"):
-        content = _fetch_cloudinary_raw(public_id)
-    else:
-        p = Path(public_id or url)
-        if not p.is_file():
-            raise HTTPException(status_code=404, detail="Attachment file missing on disk")
-        content = p.read_bytes()
+    try:
+        content = fetch_attachment(att)
+    except AttachmentUnavailableError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     media_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
     return Response(
@@ -345,29 +340,6 @@ def download_attachment(
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _fetch_cloudinary_raw(public_id: str) -> bytes:
-    """Download a raw Cloudinary asset with API credentials (bypasses PDF delivery block)."""
-    import time
-
-    import requests
-    from cloudinary.utils import private_download_url
-
-    from app.adapters.storage import _ensure_cloudinary_configured
-
-    _ensure_cloudinary_configured()
-    signed = private_download_url(
-        public_id, "", resource_type="raw", type="upload",
-        expires_at=int(time.time()) + 300,
-    )
-    resp = requests.get(signed, timeout=60)
-    if resp.status_code != 200:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Cloudinary download failed ({resp.status_code})",
-        )
-    return resp.content
-
 
 def _enqueue_parse(message_id: str) -> None:
     try:

@@ -1,5 +1,39 @@
 # Changelog
 
+## The partner's own PO now travels with the ASN and the invoice (2026-08-26)
+
+An ASN carrying only a tax invoice still leaves the retailer's accounts desk to go and
+find the order it settles. All three documents now go in one email.
+
+The source PO is read back from wherever ingestion stored it rather than re-rendered:
+the point is to hand them the same document they issued, and a reconstruction of it
+would invite an argument about which copy is authoritative. Partners on an API have no
+such file and manually keyed orders have none either — both simply contribute nothing.
+
+The Cloudinary signing dance that fetches those files lived inside the inbox route.
+Two callers need it now, so it moved to `app/adapters/storage.fetch_attachment` rather
+than being copied — a second implementation of a signed private-download URL would
+drift from the first.
+
+Two things worth naming, both found by reading the delivered mail rather than trusting
+the send:
+
+- **Filenames.** Swiggy's attachment is called
+  `DG8TMD12QLBDILJRUSF7_CREATE_OTB_PURCHASE_ORDER_ae4e21a5-814d-4c24-9bb2-...xlsx`,
+  which identifies nothing and is what an accounts desk has to find again later. They
+  are renamed to `PO-CMMPO17234.pdf` / `.xlsx`, with a numeric suffix when a partner
+  sends two of the same type so the second does not silently replace the first in
+  someone's downloads folder.
+- **Content types.** `mimetypes.guess_type` is backed by the system mime database and
+  the slim image has no entry for `.xlsx`, so the spreadsheet went out as
+  `application/octet-stream` — which mail clients will not preview. The formats
+  partners actually send are now mapped explicitly.
+
+Failures degrade rather than cascade: an unreadable source file still sends the
+invoice, a failed invoice render still sends the PO, and an oversized set is trimmed
+under Gmail's 25 MB ceiling, because a delivery note carrying one document beats one
+that never arrives.
+
 ## The tax invoice now rides along with the ASN email (2026-08-26)
 
 `app/utils/invoice_pdf.py` has said in its own docstring since it was written that it
