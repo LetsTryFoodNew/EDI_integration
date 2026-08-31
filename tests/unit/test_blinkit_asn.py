@@ -416,3 +416,66 @@ class TestContractTypeOverrides:
 
         assert isinstance(payload["quantity"], str)
         assert isinstance(payload["item_count"], str)
+
+
+class TestMultipleBatches:
+    """
+    A line filled from more than one batch.
+
+    §12.3 types `batch_number` as a single string, so one row cannot carry two
+    batches — the line ships as two rows sharing every per-unit figure and splitting
+    only the quantity. Before this, `asn_by_item` was `{code: line}` and silently kept
+    the last batch alone: the other batch vanished from the ASN while its quantity
+    stayed in the invoice total, so the retailer was told less had shipped than was
+    billed.
+    """
+
+    def _two_batches(self):
+        return _build(asn_lines=[
+            _asn_line(batch_number="LTF26H12A", shipped_qty=Decimal("234")),
+            _asn_line(batch_number="LTF26H12B", shipped_qty=Decimal("126"),
+                      expiry_date=date(2027, 3, 15)),
+        ])
+
+    def test_one_row_per_batch(self) -> None:
+        payload, _ = self._two_batches()
+        assert len(payload["items"]) == 2
+        assert [i["batch_number"] for i in payload["items"]] == ["LTF26H12A", "LTF26H12B"]
+
+    def test_quantities_split_and_still_add_up(self) -> None:
+        payload, _ = self._two_batches()
+        assert [i["quantity"] for i in payload["items"]] == [234, 126]
+        assert sum(i["quantity"] for i in payload["items"]) == 360
+        # The header still reports what the invoice bills, not the row count.
+        assert payload["quantity"] == "360.00"
+
+    def test_item_count_stays_the_number_of_unique_skus(self) -> None:
+        # §7 defines item_count as "Number of unique" — counting rows would report two
+        # SKUs on a one-SKU shipment.
+        payload, _ = self._two_batches()
+        assert payload["item_count"] == "1"
+
+    def test_per_unit_figures_are_shared_not_divided(self) -> None:
+        # unit_landing_price comes from line_total / qty. Handing it a batch quantity
+        # would make the 126-unit batch look ~2.9x more expensive per unit.
+        payload, _ = self._two_batches()
+        prices = {i["unit_landing_price"] for i in payload["items"]}
+        assert prices == {"70.40"}
+        assert {i["unit_basic_price"] for i in payload["items"]} == {67.05}
+
+    def test_each_row_keeps_its_own_expiry(self) -> None:
+        payload, _ = self._two_batches()
+        assert [i["expiry_date"] for i in payload["items"]] == ["2027-02-12", "2027-03-15"]
+
+    def test_a_single_batch_is_unchanged(self) -> None:
+        payload, _ = _build()
+        assert len(payload["items"]) == 1
+        assert payload["items"][0]["quantity"] == 360
+        assert payload["item_count"] == "1"
+
+    def test_a_line_with_no_asn_row_still_ships(self) -> None:
+        # Falls back to the invoice quantity rather than dropping the line.
+        payload, warnings = _build(asn_lines=[])
+        assert len(payload["items"]) == 1
+        assert payload["items"][0]["quantity"] == 360
+        assert any("batch_number" in w for w in warnings)

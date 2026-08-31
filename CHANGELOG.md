@@ -1,5 +1,46 @@
 # Changelog
 
+## An invoice line can now name the batches it was filled from (2026-08-26)
+
+`batch_number` took one string per line, so a line picked from two batches could only
+name one of them. The retailer books stock against a batch and matches it at goods-in,
+so the split is the part they need.
+
+    "batch_number": "LTF-202608-A"
+
+    "batch_number": [{"batchNumber": "LTF-202608-A", "quantity": 234},
+                     {"batchNumber": "LTF-202608-B", "quantity": 66}]
+
+The string form still works and means the list form with one entry for the whole line
+quantity, so nothing already sending it has to change. `batchNumber`/`batch_number` and
+`expiryDate`/`expiry_date` are both accepted — the camelCase spellings are what the
+partner contracts use. A batch without its own expiry inherits the line's.
+
+**Batch quantities must total the line's `qty`,** and the invoice is rejected
+otherwise. Summing to less silently under-declares the shipment, summing to more
+declares stock that was never invoiced; either way the retailer's goods-in disagrees
+with the invoice and it is found at the dock.
+
+**Multi-batch goes out as multiple rows, because neither partner can express it any
+other way.** Blinkit §12.3 types `batch_number` as a single string per item and Zepto's
+`batchDetails` is one object per `itemDetails` entry. A split line ships as several
+rows sharing every per-unit figure, with only the quantity divided.
+
+Three things that had to be right for that split to be honest:
+
+- `unit_landing_price` is `line_total / qty`, so it takes the **line** quantity. Given
+  a batch quantity, a 66-of-300 batch would have looked 4.5× more expensive per unit.
+- Blinkit's `item_count` is "Number of unique" (§7), not a row count — it now counts
+  distinct `item_id`, so a one-SKU shipment does not report two.
+- Zepto's `itemSequenceNumber` numbers the rows sent and stays unique, while
+  `articleSequenceNumber` identifies the article and repeats across its batches.
+
+**This fixed a latent bug.** Both builders keyed ASN rows as `{item_code: line}`, which
+kept only the last row for any item. Nothing produced multiple rows per item before, so
+it never fired — but the moment one did, a batch would have vanished from the ASN while
+its quantity stayed in the invoice total, telling the retailer less had shipped than
+was billed.
+
 ## Every edit of a keyed-in order failed to parse (2026-08-26)
 
 Saving a change to a line came back "parse failed" every time, while the original

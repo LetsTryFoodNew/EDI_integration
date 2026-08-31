@@ -237,3 +237,72 @@ class TestAsnAckEnvelope:
 
         assert _asn_ack(None) == ([], None)
         assert _asn_ack("boom") == ([], None)
+
+
+class TestMultipleBatches:
+    """
+    A line filled from more than one batch.
+
+    `batchDetails` is one object per itemDetails entry, so a line filled from two
+    batches ships as two entries. Before this, the ASN lines were collapsed into
+    `{code: line}` and only the last batch survived — the other vanished from the ASN
+    while its quantity stayed in `invoiceTotals`, telling Zepto less had shipped than
+    was billed.
+    """
+
+    def _two_batches(self):
+        return _build(asn_lines=[
+            SimpleNamespace(b1_item_code="FG00310", batch_number="LTF-A",
+                            shipped_qty=Decimal("120"), expiry_date=date(2027, 8, 24),
+                            manufacturing_date=date(2026, 2, 24)),
+            SimpleNamespace(b1_item_code="FG00310", batch_number="LTF-B",
+                            shipped_qty=Decimal("60"), expiry_date=date(2027, 9, 30),
+                            manufacturing_date=date(2026, 3, 30)),
+        ])
+
+    def test_one_entry_per_batch(self) -> None:
+        payload, _ = self._two_batches()
+        items = payload["itemDetails"]
+        assert len(items) == 2
+        assert [i["batchDetails"]["batchNumber"] for i in items] == ["LTF-A", "LTF-B"]
+
+    def test_quantities_split_and_still_add_up(self) -> None:
+        payload, _ = self._two_batches()
+        amounts = [i["quantity"]["invoicedQuantity"]["amount"] for i in payload["itemDetails"]]
+        assert amounts == [120, 60]
+        assert sum(amounts) == 180
+
+    def test_item_sequence_numbers_stay_unique(self) -> None:
+        # They number the rows actually sent, so two rows cannot share one.
+        payload, _ = self._two_batches()
+        seqs = [i["itemSequenceNumber"] for i in payload["itemDetails"]]
+        assert seqs == [1, 2]
+
+    def test_article_sequence_number_identifies_the_article(self) -> None:
+        # Both rows are the same article, so it does not advance with the rows.
+        payload, _ = self._two_batches()
+        arts = [
+            i["productIdentifier"]["buyerProductIdentifier"]["articleSequenceNumber"]
+            for i in payload["itemDetails"]
+        ]
+        assert arts == [1, 1]
+
+    def test_per_unit_price_is_shared_not_divided(self) -> None:
+        payload, _ = self._two_batches()
+        assert {i["basePrice"] for i in payload["itemDetails"]} == {67.20}
+
+    def test_invoice_total_counts_the_line_once(self) -> None:
+        # taxable_total accumulates per invoice line; adding it per batch would double
+        # the value of any split line.
+        payload, _ = self._two_batches()
+        assert payload["invoiceTotals"]["taxableAmount"] == 12096.00
+
+    def test_each_row_keeps_its_own_dates(self) -> None:
+        payload, _ = self._two_batches()
+        expiries = [i["batchDetails"]["expiryDate"] for i in payload["itemDetails"]]
+        assert expiries == ["2027-08-24", "2027-09-30"]
+
+    def test_a_single_batch_is_unchanged(self) -> None:
+        payload, _ = _build()
+        assert len(payload["itemDetails"]) == 1
+        assert payload["itemDetails"][0]["quantity"]["invoicedQuantity"]["amount"] == 180

@@ -96,7 +96,40 @@ Up to **500 invoices per request**.
 }
 ```
 
-### 3.1 Identifying the Sales Order
+### 3.1 Batches
+
+`batch_number` takes either a single batch number, or the batches the line was filled
+from with the quantity taken off each:
+
+```json
+"batch_number": "LTF-2026-08-A"
+
+"batch_number": [
+  { "batchNumber": "LTF-2026-08-A", "quantity": 234 },
+  { "batchNumber": "LTF-2026-08-B", "quantity": 66, "expiryDate": "2027-09-30" }
+]
+```
+
+The string form still works and means the list form with one entry for the whole line
+quantity, so nothing already sending it needs to change.
+
+**Batch quantities must total the line's `qty`.** The invoice is rejected otherwise:
+the ASN goes out as one row per batch, so batches summing to less silently
+under-declares the shipment and summing to more declares stock that was never
+invoiced. Either way the retailer's goods-in disagrees with the invoice, and that is
+found at the dock rather than here.
+
+Each batch may carry its own `expiryDate`; without one it inherits the line's
+`expiry_date`. `batch_number` / `batchNumber` and `expiry_date` / `expiryDate` are both
+accepted — the camelCase spellings are what the partner contracts use.
+
+Why a list rather than one row per batch on your side: both partner ASN contracts
+carry exactly one batch per item row (Blinkit §12.3 `batch_number` string, Zepto
+`batchDetails` object), so the middleware splits a multi-batch line into several rows
+on the way out. Per-unit figures — `unit_price`, MRP, the landing price — are shared
+across those rows and only the quantity divides.
+
+### 3.2 Identifying the Sales Order
 
 Send **either** form. `b1_sales_order_doc_entry` is strongly preferred — it is B1's own
 key and cannot drift.
@@ -109,7 +142,7 @@ key and cannot drift.
 An invoice carrying neither is rejected with a clear message. If both are sent, DocEntry
 wins.
 
-### 3.2 Required fields
+### 3.3 Required fields
 
 | Field | Required | Notes |
 |---|---|---|
@@ -122,7 +155,7 @@ wins.
 Everything else is optional. Unknown field names are **rejected** rather than ignored, so
 a typo surfaces immediately instead of silently dropping data.
 
-### 3.3 Linking lines back to the PO
+### 3.4 Linking lines back to the PO
 
 Send `po_line_number` where you have it, otherwise `buyer_sku`. We match in this order:
 

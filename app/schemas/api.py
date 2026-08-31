@@ -11,7 +11,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Generic, TypeVar
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import AliasChoices, BaseModel, EmailStr, Field, model_validator
 
 T = TypeVar("T")
 
@@ -1170,6 +1170,27 @@ class B1LogDetail(BaseModel):
 # One PO can carry many invoices (partial dispatches), which is why the link is
 # EdiInvoice.po_id -> edi_purchase_orders and not the other way round.
 
+class InvoiceBatch(BaseModel):
+    """
+    One manufacturing batch making up part of an invoice line.
+
+    A line is often filled from more than one batch — 234 units off one and 66 off the
+    next — and the retailer needs the split, not the total: they book stock against a
+    batch and match it at goods-in. Both partner contracts carry exactly one batch per
+    item row (Blinkit §12.3 `batch_number` string, Zepto `batchDetails` object), so a
+    multi-batch line goes out as several rows, which is why the quantity belongs here
+    rather than only on the line.
+
+    `batchNumber` is accepted as well as `batch_number`, since that is the spelling
+    both partner contracts use and the one a SAP developer is likely to copy.
+    """
+    batch_number: str = Field(min_length=1, max_length=100, validation_alias=AliasChoices("batch_number", "batchNumber"))
+    quantity: Decimal = Field(gt=0)
+    expiry_date: date | None = Field(default=None, validation_alias=AliasChoices("expiry_date", "expiryDate"))
+
+    model_config = {"extra": "forbid", "populate_by_name": True}
+
+
 class InvoiceLineItemPush(BaseModel):
     """
     One line of an A/R Invoice as SAP sends it.
@@ -1200,10 +1221,62 @@ class InvoiceLineItemPush(BaseModel):
     line_total: Decimal | None = None
 
     # Carried onto the ASN line when the 856 is built from this invoice.
-    batch_number: str | None = Field(default=None, max_length=100)
+    #
+    # Either a single batch number, or the batches this line was filled from with the
+    # quantity taken off each:
+    #
+    #     "batch_number": "LTF-202608-A"
+    #     "batch_number": [{"batchNumber": "LTF-202608-A", "quantity": 234},
+    #                      {"batchNumber": "LTF-202608-B", "quantity": 66}]
+    #
+    # The string form is kept because SAP already sends it and it means exactly the
+    # list form with one entry for the whole line quantity.
+    batch_number: str | list[InvoiceBatch] | None = None
     expiry_date: date | None = None
 
     model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def batches_account_for_the_line(self) -> InvoiceLineItemPush:
+        """
+        The batch split has to add up to what the line ships.
+
+        A mismatch is not a rounding argument: the ASN goes out as one row per batch,
+        so batches summing to less than the line silently under-declares the shipment
+        and summing to more declares stock that was never invoiced. Either way the
+        retailer's goods-in disagrees with the invoice, which is found at the dock.
+        """
+        if not isinstance(self.batch_number, list):
+            return self
+        total = sum((b.quantity for b in self.batch_number), Decimal("0"))
+        if total != self.qty:
+            raise ValueError(
+                f"batch quantities total {total} but the line ships {self.qty}"
+            )
+        return self
+
+    def resolved_batches(self) -> list[InvoiceBatch]:
+        """
+        The line's batches in one shape, whichever form arrived.
+
+        A bare string is one batch for the whole quantity; nothing at all is one
+        unnamed batch, so a line with no batch data still produces exactly one ASN row
+        rather than vanishing from the shipment.
+        """
+        if isinstance(self.batch_number, list):
+            return [
+                InvoiceBatch(
+                    batch_number=b.batch_number,
+                    quantity=b.quantity,
+                    expiry_date=b.expiry_date or self.expiry_date,
+                )
+                for b in self.batch_number
+            ]
+        return [InvoiceBatch(
+            batch_number=self.batch_number or "-",
+            quantity=self.qty,
+            expiry_date=self.expiry_date,
+        )]
 
 
 class InvoicePush(BaseModel):

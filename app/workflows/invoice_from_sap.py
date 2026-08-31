@@ -444,16 +444,23 @@ def _build_asn(db: Session, po: Any, invoice: Any, payload: InvoicePush) -> Any:
 
     index = _po_line_index(po)
     for item in payload.line_items:
-        db.add(EdiAsnLineItem(
-            id=uuid.uuid4(),
-            asn_id=asn.id,
-            po_line_id=_match_po_line(index, item),
-            shipped_qty=item.qty,
-            buyer_sku=item.buyer_sku,
-            b1_item_code=item.b1_item_code,
-            batch_number=item.batch_number,
-            expiry_date=item.expiry_date,
-        ))
+        # One ASN row per batch. An invoice line filled from two batches ships as two
+        # rows because that is what both partner contracts carry — Blinkit's
+        # `batch_number` is a string per item (§12.3) and Zepto's `batchDetails` is one
+        # object per itemDetails entry, so neither can express a nested split. The
+        # single-batch case is the same code path with one batch of the whole quantity.
+        po_line_id = _match_po_line(index, item)
+        for batch in item.resolved_batches():
+            db.add(EdiAsnLineItem(
+                id=uuid.uuid4(),
+                asn_id=asn.id,
+                po_line_id=po_line_id,
+                shipped_qty=batch.quantity,
+                buyer_sku=item.buyer_sku,
+                b1_item_code=item.b1_item_code,
+                batch_number=None if batch.batch_number == "-" else batch.batch_number,
+                expiry_date=batch.expiry_date,
+            ))
     db.flush()
     return asn
 

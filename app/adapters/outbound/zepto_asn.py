@@ -102,86 +102,98 @@ def build_zepto_asn_payload(
     warnings: list[str] = []
 
     inv_lines = list(invoice.line_items or [])
-    asn_by_item = {(line.b1_item_code or ""): line for line in (asn.line_items or [])}
+    asn_by_item = _asn_lines_by_item(asn)
 
     items: list[dict[str, Any]] = []
     taxable_total = _ZERO
     material_codes = _material_codes_from_raw(session, po)
+    seq = 0
 
-    for seq, inv_line in enumerate(inv_lines, start=1):
+    for article_seq, inv_line in enumerate(inv_lines, start=1):
         material = _material_for(session, inv_line.b1_item_code)
         po_line = getattr(inv_line, "po_line", None)
-        asn_line = asn_by_item.get(inv_line.b1_item_code or "")
 
-        qty = _d(inv_line.qty)
-        taxable_total += _money(inv_line.taxable_amount or qty * _d(inv_line.unit_price))
+        line_qty = _d(inv_line.qty)
+        taxable_total += _money(
+            inv_line.taxable_amount or line_qty * _d(inv_line.unit_price)
+        )
 
-        batch = getattr(asn_line, "batch_number", None) or ""
-        expiry = getattr(asn_line, "expiry_date", None)
-        if not batch:
-            warnings.append(
-                f"Item {inv_line.b1_item_code}: no batch_number. Zepto has no ASN update "
-                f"API, so a rejected line has to be cancelled and re-sent under a new "
-                f"invoice number."
-            )
-        if expiry is None:
-            warnings.append(f"Item {inv_line.b1_item_code}: no expiry_date on the ASN line.")
+        # `batchDetails` is one object per itemDetails entry, so a line filled from two
+        # batches ships as two entries sharing every per-unit figure and splitting only
+        # the quantity. The two sequence numbers then mean different things and are
+        # counted differently: itemSequenceNumber numbers the rows actually sent, so it
+        # has to stay unique, while articleSequenceNumber identifies the article and
+        # stays the same across that article's batches.
+        for asn_line in asn_by_item.get(inv_line.b1_item_code or "", [None]):
+            seq += 1
+            qty = _d(getattr(asn_line, "shipped_qty", None) or line_qty)
 
-        ean = getattr(material, "ean_code", None) or ""
-        if not ean:
-            warnings.append(
-                f"Item {inv_line.b1_item_code}: no EAN in the item master; sending the "
-                f"item code as the seller identifier instead."
-            )
+            batch = getattr(asn_line, "batch_number", None) or ""
+            expiry = getattr(asn_line, "expiry_date", None)
+            if not batch:
+                warnings.append(
+                    f"Item {inv_line.b1_item_code}: no batch_number. Zepto has no ASN update "
+                    f"API, so a rejected line has to be cancelled and re-sent under a new "
+                    f"invoice number."
+                )
+            if expiry is None:
+                warnings.append(f"Item {inv_line.b1_item_code}: no expiry_date on the ASN line.")
 
-        buyer_sku = getattr(po_line, "buyer_sku", None) or ""
-        buyer_ident: dict[str, Any] = {
-            "articleSequenceNumber": seq,
-            "skuCode": buyer_sku,
-            "articleName": getattr(po_line, "buyer_sku_description", None)
-            or inv_line.description
-            or "",
-        }
-        # "one of skuCode or materialCode has to be present. Preferably send skuCode."
-        # materialCode is typed Numeric, so the SKU UUID is not a stand-in for it --
-        # sending one put a UUID in a numeric field. Only include a real one.
-        material_code = material_codes.get(buyer_sku)
-        if material_code:
-            buyer_ident["materialCode"] = material_code
+            ean = getattr(material, "ean_code", None) or ""
+            if not ean:
+                warnings.append(
+                    f"Item {inv_line.b1_item_code}: no EAN in the item master; sending the "
+                    f"item code as the seller identifier instead."
+                )
 
-        item: dict[str, Any] = {
-            "itemSequenceNumber": seq,
-            # Both are named in the contract's field table and were absent entirely.
-            "mrp": _num(_money(getattr(material, "mrp", None))),
-            "basePrice": _num(_money(inv_line.unit_price)),
-            "productIdentifier": {
-                "buyerProductIdentifier": buyer_ident,
-                "sellerProductIdentifier": {
-                    "identifier": {
-                        "identifierType": "EAN",
-                        "identifierValue": ean,
+            buyer_sku = getattr(po_line, "buyer_sku", None) or ""
+            buyer_ident: dict[str, Any] = {
+                "articleSequenceNumber": article_seq,
+                "skuCode": buyer_sku,
+                "articleName": getattr(po_line, "buyer_sku_description", None)
+                or inv_line.description
+                or "",
+            }
+            # "one of skuCode or materialCode has to be present. Preferably send skuCode."
+            # materialCode is typed Numeric, so the SKU UUID is not a stand-in for it --
+            # sending one put a UUID in a numeric field. Only include a real one.
+            material_code = material_codes.get(buyer_sku)
+            if material_code:
+                buyer_ident["materialCode"] = material_code
+
+            item: dict[str, Any] = {
+                "itemSequenceNumber": seq,
+                # Both are named in the contract's field table and were absent entirely.
+                "mrp": _num(_money(getattr(material, "mrp", None))),
+                "basePrice": _num(_money(inv_line.unit_price)),
+                "productIdentifier": {
+                    "buyerProductIdentifier": buyer_ident,
+                    "sellerProductIdentifier": {
+                        "identifier": {
+                            "identifierType": "EAN",
+                            "identifierValue": ean,
+                        },
+                        "itemCode": inv_line.b1_item_code or "",
+                        "itemName": inv_line.description
+                        or getattr(material, "item_name", None)
+                        or "",
                     },
-                    "itemCode": inv_line.b1_item_code or "",
-                    "itemName": inv_line.description
-                    or getattr(material, "item_name", None)
-                    or "",
                 },
-            },
-            "batchDetails": {
-                "batchNumber": batch,
-                "manufacturingDate": _iso(getattr(asn_line, "manufacturing_date", None)),
-                "expiryDate": _iso(expiry),
-            },
-            # Rule 4: pieces, never cases.
-            "quantity": {
-                "invoicedQuantity": {
-                    "amount": _num(qty),
-                    "unitOfMeasure": _uom(inv_line, material),
+                "batchDetails": {
+                    "batchNumber": batch,
+                    "manufacturingDate": _iso(getattr(asn_line, "manufacturing_date", None)),
+                    "expiryDate": _iso(expiry),
                 },
-                "freeQuantity": {"amount": 0, "unitOfMeasure": _uom(inv_line, material)},
-            },
-        }
-        items.append(item)
+                # Rule 4: pieces, never cases.
+                "quantity": {
+                    "invoicedQuantity": {
+                        "amount": _num(qty),
+                        "unitOfMeasure": _uom(inv_line, material),
+                    },
+                    "freeQuantity": {"amount": 0, "unitOfMeasure": _uom(inv_line, material)},
+                },
+            }
+            items.append(item)
 
     if not items:
         warnings.append("Invoice has no line items — Zepto requires at least one.")
@@ -305,6 +317,20 @@ def _material_for(session: Session, item_code: str | None) -> Any:
     return session.execute(
         select(MaterialMaster).where(MaterialMaster.item_code == item_code)
     ).scalar_one_or_none()
+
+
+def _asn_lines_by_item(asn: Any) -> dict[str, list[Any]]:
+    """
+    ASN rows grouped by item, in order, so a multi-batch line keeps its batches.
+
+    This used to be ``{code: line}``, which silently kept only the last batch of any
+    item shipped from more than one -- the others vanished from the ASN while their
+    quantities stayed in the invoice total.
+    """
+    grouped: dict[str, list[Any]] = {}
+    for line in (asn.line_items or []):
+        grouped.setdefault(line.b1_item_code or "", []).append(line)
+    return grouped
 
 
 def _material_codes_from_raw(session: Session, po: Any) -> dict[str, str]:

@@ -266,9 +266,7 @@ def build_blinkit_asn_payload(
     warnings: list[str] = []
 
     inv_lines = list(invoice.line_items or [])
-    asn_by_item = {
-        (line.b1_item_code or ""): line for line in (asn.line_items or [])
-    }
+    asn_by_item = _asn_lines_by_item(asn)
 
     items: list[dict[str, Any]] = []
     total_qty = _ZERO
@@ -277,86 +275,91 @@ def build_blinkit_asn_payload(
     for inv_line in inv_lines:
         material = _material_for(session, inv_line.b1_item_code)
         po_line = inv_line.po_line
-        asn_line = asn_by_item.get(inv_line.b1_item_code or "")
 
-        qty = _d(inv_line.qty)
-        total_qty += qty
-        taxable = _money(inv_line.taxable_amount or qty * _d(inv_line.unit_price))
+        line_qty = _d(inv_line.qty)
+        total_qty += line_qty
+        taxable = _money(inv_line.taxable_amount or line_qty * _d(inv_line.unit_price))
         basic_total += taxable
 
-        batch = getattr(asn_line, "batch_number", None) or ""
-        expiry = getattr(asn_line, "expiry_date", None)
-        if not batch:
-            warnings.append(
-                f"Item {inv_line.b1_item_code}: no batch_number — the contract marks it "
-                f"mandatory (§12.3) and Blinkit may reject the line."
-            )
-        if expiry is None:
-            warnings.append(
-                f"Item {inv_line.b1_item_code}: no expiry_date and no mfg_date/shelf_life "
-                f"— §12.16-12.18 require one of the two forms."
-            )
+        # One row per batch. §12.3 types batch_number as a single string, so a line
+        # filled from two batches cannot be expressed as one row -- it ships as two,
+        # sharing every per-unit figure and splitting only the quantity.
+        for asn_line in asn_by_item.get(inv_line.b1_item_code or "", [None]):
+            qty = _d(getattr(asn_line, "shipped_qty", None) or line_qty)
 
-        upc = getattr(material, "ean_code", None) or ""
-        if not upc:
-            warnings.append(
-                f"Item {inv_line.b1_item_code}: no EAN/UPC in the item master (§12.5 "
-                f"mandatory)."
-            )
+            batch = getattr(asn_line, "batch_number", None) or ""
+            expiry = getattr(asn_line, "expiry_date", None)
+            if not batch:
+                warnings.append(
+                    f"Item {inv_line.b1_item_code}: no batch_number — the contract marks it "
+                    f"mandatory (§12.3) and Blinkit may reject the line."
+                )
+            if expiry is None:
+                warnings.append(
+                    f"Item {inv_line.b1_item_code}: no expiry_date and no mfg_date/shelf_life "
+                    f"— §12.16-12.18 require one of the two forms."
+                )
 
-        case_size = int(getattr(material, "case_size", 0) or 0)
-        unit, uom_value = _uom(material, inv_line)
+            upc = getattr(material, "ean_code", None) or ""
+            if not upc:
+                warnings.append(
+                    f"Item {inv_line.b1_item_code}: no EAN/UPC in the item master (§12.5 "
+                    f"mandatory)."
+                )
 
-        item: dict[str, Any] = {
-            "item_id": str(_blinkit_item_id(po_line, inv_line)),
-            "sku_code": getattr(po_line, "buyer_sku", None) or "",
-            "batch_number": batch,
-            "sku_description": (
-                inv_line.description or getattr(material, "item_name", None) or ""
-            ),
-            "upc": upc,
-            "case_config": case_size,
-            "quantity": _qty(qty, f"Item {inv_line.b1_item_code}", warnings),
-            "mrp": _num(_money(getattr(material, "mrp", None))),
-            "hsn_code": inv_line.hsn_code or getattr(material, "hsn", None) or "",
-            "total_additional_cess_value": _num(_money(inv_line.cess_amount)),
-            # §12.11 — every percentage present, zeros included. Omitting a key is not
-            # the same as sending 0, and all six are marked mandatory.
-            #
-            # The contract types all six as `string` (§12.11.1-12.11.6). Blinkit's
-            # implementation does not:
-            #
-            #     cannot unmarshal string into Go struct field
-            #     ItemTaxDistribution.items.tax_distribution.cess_percentage
-            #     of type float64
-            #
-            # Every field in that struct is float64, so all six go as numbers. Where
-            # the contract and the running API disagree, the API wins.
-            "tax_distribution": {
-                "cgst_percentage": _num(_money(inv_line.cgst_rate)),
-                "sgst_percentage": _num(_money(inv_line.sgst_rate)),
-                "igst_percentage": _num(_money(inv_line.igst_rate)),
-                "ugst_percentage": _num(_ZERO),
-                "cess_percentage": _num(_money(inv_line.cess_rate)),
-                "additional_cess_value": _num(_money(inv_line.cess_amount)),
-            },
-            # Unquoted in every JSON example in the contract (§12 samples), unlike
-            # unit_landing_price / taxable_value / basic_price / landing_price, which
-            # are quoted in the same samples and stay strings. The examples are the
-            # wire format; the field table is not reliable about types.
-            "unit_basic_price": _num(_money(inv_line.unit_price)),
-            "unit_landing_price": _num_str(_landing_price(inv_line, qty)),
-            "uom": {"unit": unit, "value": uom_value},
-        }
-        if expiry is not None:
-            item["expiry_date"] = _iso(expiry)
-        if case_size > 0:
-            item["case_configuration"] = [{
-                "level": BlinkitCaseLevel.OUTER.value,
-                "type": BlinkitCaseType.CRATE.value,
-                "value": case_size,
-            }]
-        items.append(item)
+            case_size = int(getattr(material, "case_size", 0) or 0)
+            unit, uom_value = _uom(material, inv_line)
+
+            item: dict[str, Any] = {
+                "item_id": str(_blinkit_item_id(po_line, inv_line)),
+                "sku_code": getattr(po_line, "buyer_sku", None) or "",
+                "batch_number": batch,
+                "sku_description": (
+                    inv_line.description or getattr(material, "item_name", None) or ""
+                ),
+                "upc": upc,
+                "case_config": case_size,
+                "quantity": _qty(qty, f"Item {inv_line.b1_item_code}", warnings),
+                "mrp": _num(_money(getattr(material, "mrp", None))),
+                "hsn_code": inv_line.hsn_code or getattr(material, "hsn", None) or "",
+                "total_additional_cess_value": _num(_money(inv_line.cess_amount)),
+                # §12.11 — every percentage present, zeros included. Omitting a key is not
+                # the same as sending 0, and all six are marked mandatory.
+                #
+                # The contract types all six as `string` (§12.11.1-12.11.6). Blinkit's
+                # implementation does not:
+                #
+                #     cannot unmarshal string into Go struct field
+                #     ItemTaxDistribution.items.tax_distribution.cess_percentage
+                #     of type float64
+                #
+                # Every field in that struct is float64, so all six go as numbers. Where
+                # the contract and the running API disagree, the API wins.
+                "tax_distribution": {
+                    "cgst_percentage": _num(_money(inv_line.cgst_rate)),
+                    "sgst_percentage": _num(_money(inv_line.sgst_rate)),
+                    "igst_percentage": _num(_money(inv_line.igst_rate)),
+                    "ugst_percentage": _num(_ZERO),
+                    "cess_percentage": _num(_money(inv_line.cess_rate)),
+                    "additional_cess_value": _num(_money(inv_line.cess_amount)),
+                },
+                # Unquoted in every JSON example in the contract (§12 samples), unlike
+                # unit_landing_price / taxable_value / basic_price / landing_price, which
+                # are quoted in the same samples and stay strings. The examples are the
+                # wire format; the field table is not reliable about types.
+                "unit_basic_price": _num(_money(inv_line.unit_price)),
+                "unit_landing_price": _num_str(_landing_price(inv_line, line_qty)),
+                "uom": {"unit": unit, "value": uom_value},
+            }
+            if expiry is not None:
+                item["expiry_date"] = _iso(expiry)
+            if case_size > 0:
+                item["case_configuration"] = [{
+                    "level": BlinkitCaseLevel.OUTER.value,
+                    "type": BlinkitCaseType.CRATE.value,
+                    "value": case_size,
+                }]
+            items.append(item)
 
     po_status = _po_status(session, po)
     delivery_type = (
@@ -385,7 +388,7 @@ def build_blinkit_asn_payload(
         "basic_price": _num_str(invoice.subtotal_amount or basic_total),
         "landing_price": _num_str(invoice.grand_total),
         "quantity": _num_str(total_qty),
-        "item_count": str(len(items)),
+        "item_count": str(len({i["item_id"] for i in items})),
         "po_status": po_status.value,
         "supplier_details": _supplier_details(seller),
         "buyer_details": {"gstin": po.buyer_gstin or ""},
@@ -486,6 +489,20 @@ def _uom(material: Any, inv_line: Any) -> tuple[str, int | float]:
             except ArithmeticError:
                 pass
     return (inv_line.uom or getattr(material, "invntry_uom", None) or "PCS"), 1
+
+
+def _asn_lines_by_item(asn: Any) -> dict[str, list[Any]]:
+    """
+    ASN rows grouped by item, in order, so a multi-batch line keeps its batches.
+
+    This used to be ``{code: line}``, which silently kept only the last batch of any
+    item shipped from more than one -- the others vanished from the ASN while their
+    quantities stayed in the invoice total.
+    """
+    grouped: dict[str, list[Any]] = {}
+    for line in (asn.line_items or []):
+        grouped.setdefault(line.b1_item_code or "", []).append(line)
+    return grouped
 
 
 def _landing_price(inv_line: Any, qty: Decimal) -> Decimal:
