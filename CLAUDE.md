@@ -110,9 +110,9 @@ Then begin. Do NOT ask the user to redefine Phase 0 — it is fully defined in S
 
 We are building a **custom EDI (Electronic Data Interchange) middleware** that:
 
-1. Receives Purchase Orders (POs), RTVs, and related documents from ~15 retail platforms (Blinkit, Zepto, Swiggy, BigBasket, Amazon, Flipkart, DMart, Reliance, etc.).
+1. Receives Purchase Orders (POs), RTVs, and related documents from ~15 retail platforms (Blinkit, Zepto, Swiggy, BigBasket, Amazon, Flipkart, Reliance, etc.).
 2. Some platforms provide **REST APIs** (Blinkit, Zepto, BigBasket, Amazon SP-API, Flipkart Seller).
-3. Other platforms send POs via **Gmail (PDF/Excel attachments)** or require **portal scraping** (Swiggy, Reliance, DMart in some cases).
+3. Other platforms send POs via **Gmail (PDF/Excel attachments)** or require **portal scraping** (Swiggy, Reliance in some cases).
 4. Normalizes everything into a **canonical EDI 850 schema** (Indian retail variant — GSTIN, HSN, CGST/SGST/IGST, e-invoicing aware).
 5. Pushes Sales Orders into **SAP Business One** via its **Service Layer (REST/OData v4)** — NOT IDoc, NOT BAPI.
 6. Manages outbound documents back to retailers: 855 (PO Ack), 856 (ASN), 810 (Invoice), Credit Notes for RTV.

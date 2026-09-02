@@ -423,7 +423,6 @@ Track outstanding work here. Check off items as they are completed.
 |---|---|---|
 | SWIGGY_PO | SWIGGY | 6h / 24h |
 | BIGBASKET_PO | BIGBASKET | 12h / 48h |
-| DMART_PO | DMART | 24h / 48h |
 | (and others in seed data) | | |
 
 Blinkit uses a WEBHOOK channel — email ingestion is for legacy/manual forwards only.

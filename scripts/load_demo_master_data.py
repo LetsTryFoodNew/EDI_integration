@@ -28,7 +28,6 @@ PARTNERS = [
     dict(code="BIGBASKET",      name="BigBasket (Supermarket Grocery)",       b1_card_code="C00015", gstin="29AABCS1429B1Z0", business_type="E-Commerce",     group_name="Modern Trade",  phone_numbers=["+918040001500"],                  email_address="vendor@bigbasket.com"),
     dict(code="AMAZON",         name="Amazon Retail India Pvt Ltd",           b1_card_code="C00016", gstin="29AAICA4872D1ZK", business_type="E-Commerce",     group_name="Marketplace",   phone_numbers=["+918040001600"],                  email_address="vendorcentral@amazon.in"),
     dict(code="FLIPKART",       name="Flipkart Internet Pvt Ltd",             b1_card_code="C00017", gstin="29AACCF0683K1ZR", business_type="E-Commerce",     group_name="Marketplace",   phone_numbers=["+918040001700"],                  email_address="seller.support@flipkart.com"),
-    dict(code="DMART",          name="Avenue Supermarts (DMart)",             b1_card_code="C00018", gstin="27AACCA8432B1ZG", business_type="Hypermarket",    group_name="General Trade", phone_numbers=["+912240001800"],                  email_address="purchase@dmartindia.com"),
     dict(code="RELIANCE_JIO",   name="Reliance Retail / JioMart",             b1_card_code="C00019", gstin="27AABCR1718E1ZL", business_type="Hypermarket",    group_name="General Trade", phone_numbers=["+912240001900"],                  email_address="vendor.jiomart@ril.com"),
     dict(code="NATURES_BASKET", name="Nature's Basket (Godrej)",              b1_card_code="C00020", gstin="27AAACG1234M1Z2", business_type="Gourmet Retail", group_name="General Trade", phone_numbers=["+912240002000"],                  email_address="buying@naturesbasket.co.in"),
     dict(code="SPAR",           name="SPAR Hypermarket India",                b1_card_code="C00021", gstin="29AAECM7654N1ZQ", business_type="Hypermarket",    group_name="General Trade", phone_numbers=["+918040002100"],                  email_address="vendors@sparindia.com"),
@@ -112,10 +111,6 @@ PARTNER_SKUS: dict[str, tuple[float, list[tuple[str, str, bool]]]] = {
     "BIGBASKET": (35.0, [
         ("BB-40001", "LTFN003", True), ("BB-40002", "LTFT001", True),
         ("BB-40003", "LTFT002", False), ("BB-40004", "LTFM005", False),
-    ]),
-    "DMART": (38.0, [
-        ("DM-SNACK-77", "LTFM002", True), ("DM-SNACK-78", "LTFS003", False),
-        ("DM-SNACK-79", "LTFN001", True),
     ]),
     # Amazon uses ASINs
     "AMAZON": (32.0, [
@@ -203,9 +198,6 @@ SHIP_TO = [
     dict(partner_code="BIGBASKET", buyer_whs_code="BB-KOL-001", buyer_warehouse_name="BigBasket Kolkata DC",
          street="NH6, Dhulagarh Logistics Park", block="Sankrail", city="Howrah", zip_code="711302",
          state="West Bengal", gst_registration_no="19AABCS1429B1ZD"),
-    dict(partner_code="DMART",   buyer_whs_code="DM-MUM-001", buyer_warehouse_name="DMart Bhiwandi DC",
-         street="Warehouse 12, Mankoli Naka", block="Bhiwandi", city="Thane", zip_code="421302",
-         state="Maharashtra", gst_registration_no="27AACCA8432B1ZG"),
     dict(partner_code="AMAZON",  buyer_whs_code="AMZ-BOM7",   buyer_warehouse_name="Amazon BOM7 Fulfilment Centre",
          street="Village Vahuli, Padgha", block="Bhiwandi", city="Thane", zip_code="421101",
          state="Maharashtra", gst_registration_no="27AAICA4872D1ZS"),

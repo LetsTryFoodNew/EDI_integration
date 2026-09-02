@@ -1,5 +1,26 @@
 # Changelog
 
+## DMart removed as a trading partner (2026-08-25)
+
+Removed at the user's request — DMart never had a working parser (no `DmartEmailAdapter`/
+parser ever existed) or ship-to/SKU mapping data; every one of its 254 POs on both local
+and production was an `E000_PARSE_FAILED` placeholder from failed parse attempts, with
+zero line items, invoices, ASNs, or outbound messages ever created for it.
+
+- Deleted the `DMART` row from `trading_partners` and every dependent row (254 POs, 254
+  raw_messages, 254 validation_issues, 2 status_history entries, 1 ship_to_mapping) on
+  **both** the local dev DB and the production server, via `scripts/remove_partner.sql`
+  (children-before-parents, single transaction, identical script run on both — verified
+  matching row counts on each side before commit).
+- Removed DMart from `scripts/load_demo_master_data.py` (partner record, tax-rate/SKU
+  seed group, ship-to warehouse mapping) and the two doc-comment mentions in
+  `app/workflows/ingest_to_canonical.py` and `app/adapters/outbound/email_outbound.py`.
+- Updated `CLAUDE.md` §1 and `PLAYBOOK.md`'s Gmail label table to drop DMart from the
+  platform list, so it isn't reintroduced by a future session reading the spec.
+- Left the DMart mention in this file's 2026-08-XX `source_channel` entry untouched —
+  changelog entries are a historical record of what was true when written, not live docs.
+- App verified healthy on both databases after removal.
+
 ## An invoice line can now name the batches it was filled from (2026-08-26)
 
 `batch_number` took one string per line, so a line picked from two batches could only

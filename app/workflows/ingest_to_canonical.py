@@ -236,6 +236,6 @@ def _build_registry() -> dict[str, BaseEmailAdapter]:
     adapters: list[BaseEmailAdapter] = [
         SwiggyEmailAdapter(),
         # Add more email adapters here as partners are onboarded:
-        # BigBasketEmailAdapter(), DmartEmailAdapter(), etc.
+        # BigBasketEmailAdapter(), etc.
     ]
     return {a.get_partner_code(): a for a in adapters}

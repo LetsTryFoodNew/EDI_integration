@@ -1,7 +1,7 @@
 """
 Email outbound adapter — sends formatted ACK/ASN notifications via Gmail.
 
-Used for email-based partners (Swiggy, BigBasket, DMart, etc.) that receive
+Used for email-based partners (Swiggy, BigBasket, etc.) that receive
 outbound documents as email replies rather than via API.
 
 Requires: Gmail credentials with the `gmail.send` scope (in addition to
