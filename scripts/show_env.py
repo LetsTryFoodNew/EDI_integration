@@ -25,8 +25,11 @@ import sys
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
-#: Names whose whole value is a secret.
-SECRET_NAME = re.compile(r"(KEY|SECRET|PASSWORD|PASSWD|TOKEN|DSN|CREDENTIAL|WEBHOOK)", re.I)
+#: Names whose whole value is a secret. CLIENT_ID is here because half a
+#: credential pair is still a credential -- it printed in full once.
+SECRET_NAME = re.compile(
+    r"(KEY|SECRET|PASSWORD|PASSWD|TOKEN|DSN|CREDENTIAL|WEBHOOK|CLIENT_ID)", re.I
+)
 
 #: A URL carrying user:password@host. Masked in place so the host stays readable —
 #: knowing which database you are pointed at is the reason to read the file at all.
