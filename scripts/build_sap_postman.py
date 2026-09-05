@@ -34,8 +34,12 @@ KEEP: dict[str, set[str] | None] = {
     "07": None,   # SKU mapping
     "08": {"Sync ship-to (from SAP)", "List ship-to  → sets {{shipToId}}"},
     "09": {"Sync bill-to (from SAP)", "List bill-to  → sets {{billToId}}"},
-    "10": {"Sync branches (from SAP)", "List branches  → sets {{branchId}}"},
-    "11": {"Sync warehouses (from SAP)", "List warehouses  → sets {{warehouseId}}"},
+    "10": {"Add or update branch  → 201 create / 200 update",
+           "…send it again → 200, values updated",
+           "Sync branches (from SAP)", "List branches  → sets {{branchId}}"},
+    "11": {"Add or update warehouse  → 201 create / 200 update",
+           "…send it again → 200, values updated",
+           "Sync warehouses (from SAP)", "List warehouses  → sets {{warehouseId}}"},
 }
 
 src = json.loads(SRC.read_text())
@@ -69,6 +73,8 @@ out = {
             "  ship-to/sync        partner_code + buyer_whs_code      -> CardCode + Address\n"
             "  bill-to/sync        partner_code + buyer_bill_to_code  -> CardCode + Address\n"
             "  sku-mappings/sync   partner_code + buyer_sku           -> CardCode + item\n"
+            "  branches            bpl_id                             -> OBPL.BPLId\n"
+            "  warehouses          whs_code                           -> OWHS.WhsCode\n"
             "  invoices            b1_invoice_doc_entry, then invoice_number -> DocEntry\n\n"
             "Single-record endpoints answer 201 when they created and 200 when they "
             "updated. Batch (/sync) endpoints answer 200 and report "
@@ -79,6 +85,9 @@ out = {
             "one item under several of their own codes, and keying on the item would "
             "make the second push overwrite the first. `b1_item_code` is still required "
             "and must already exist in Item Master.\n\n"
+            "Warehouses need their branch first: `bpl_id` must already name a branch "
+            "we hold, or the push is refused. A warehouse whose branch is unknown "
+            "cannot decide place of supply.\n\n"
             "Invoices match on `DocEntry` first because it is your immutable key; "
             "`invoice_number` is the fallback, since the first push usually has no "
             "DocEntry yet.\n\n"

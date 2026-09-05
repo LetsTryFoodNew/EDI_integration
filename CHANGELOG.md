@@ -1,5 +1,41 @@
 # Changelog
 
+## Branches and warehouses get the single-record form too (2026-09-05)
+
+`/branches/sync` and `/warehouses/sync` already upserted on exactly the right keys —
+`bpl_id` (OBPL.BPLId) and `whs_code` (OWHS.WhsCode). What was missing was the
+single-object form the rest of master data has, so SAP had to wrap one record in a list
+to send it.
+
+    POST /api/master-data/branches      bpl_id     201 create / 200 update
+    POST /api/master-data/warehouses    whs_code   201 create / 200 update
+
+Both take the same object their `/sync` twin takes in its list, and a test asserts the
+two match on the same column — if they ever diverged, a record created through one
+endpoint would be duplicated by the other.
+
+**A warehouse still needs its branch first.** `bpl_id` must already name a branch we
+hold or the push is refused with `409`, rather than stored with a dangling link. A
+warehouse whose branch is unknown cannot decide place of supply, and the failure would
+otherwise surface much later as a rejected Sales Order — the same rule that makes a SKU
+mapping depend on Item Master.
+
+**`is_active` and `notes` stay ours** on both, so a push cannot undo an ops decision to
+park a branch or warehouse. SAP's own `disabled` flag *is* always applied, so a branch
+SAP re-enables stops being treated as closed on the next push.
+
+Verified locally:
+
+    branch    create -> 201   send again -> 200   (name and state applied)
+    warehouse create -> 201   send again -> 200   (name and city applied)
+    warehouse with an unknown bpl_id      -> 409
+    warehouse that is soft-deleted here   -> 409
+    ops fields after a push: is_active=False, notes='parked by ops'  (untouched)
+    rows: branches=1, warehouses=1  (no duplicates)
+
+Both Postman collections carry the four new requests, and the SAP-facing one is
+regenerated from the full one so it cannot drift.
+
 ## Malformed JSON said "[401] JSON decode error" (2026-09-05)
 
 A caller adding a phone number to a customer payload got:

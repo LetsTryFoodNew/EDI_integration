@@ -129,8 +129,8 @@ curl -s "$BASE/auth/me" -H "Authorization: Bearer $TOKEN"
 | SKU Mapping | `POST /api/master-data/sku-mappings/sync` | `GET /api/master-data/sku-mappings` |
 | Ship-to | `POST /api/master-data/ship-to/sync` | `GET /api/master-data/ship-to` |
 | Bill-to | `POST /api/master-data/bill-to/sync` | `GET /api/master-data/bill-to` |
-| Branch Master | `POST /api/master-data/branches/sync` | `GET /api/master-data/branches` |
-| Warehouse Master | `POST /api/master-data/warehouses/sync` | `GET /api/master-data/warehouses` |
+| Branch Master | `POST /api/master-data/branches` — **add or update**, keyed on `bpl_id`<br>`POST /api/master-data/branches/sync` — batch, same behaviour | `GET /api/master-data/branches` |
+| Warehouse Master | `POST /api/master-data/warehouses` — **add or update**, keyed on `whs_code`<br>`POST /api/master-data/warehouses/sync` — batch, same behaviour | `GET /api/master-data/warehouses` |
 
 **Exist, but for our operations team — not part of your integration:**
 
@@ -160,6 +160,8 @@ is created if absent and updated if present.
 | `POST /api/master-data/ship-to/sync` | `partner_code` + `buyer_whs_code` | `CardCode` + Address |
 | `POST /api/master-data/bill-to/sync` | `partner_code` + `buyer_bill_to_code` | `CardCode` + Address |
 | `POST /api/master-data/sku-mappings/sync` | `partner_code` + `buyer_sku` | `CardCode` + customer's item code |
+| `POST /api/master-data/branches` | `bpl_id` | `OBPL.BPLId` |
+| `POST /api/master-data/warehouses` | `whs_code` | `OWHS.WhsCode` |
 | `POST /api/invoices` | `b1_invoice_doc_entry`, then `invoice_number` | `DocEntry` |
 
 **Single-record endpoints answer `201` when they created and `200` when they updated**,
@@ -180,6 +182,7 @@ local decision:
 |---|---|
 | Customer integration config — `source_channel`, `gmail_label`, `webhook_secret`, `asn_sla_hours` | Describes how we *fetch* that retailer's orders. Set once when the customer is created; on later pushes it is filled only where it is still empty. Sending `source_channel` for a live API customer will not demote it — that would silently stop its PO ingestion. |
 | Ops mappings — `b1_whs_code`, `b1_bill_to_code`, `mapping_status` | Assigned by our operations team. Sync writes only the address and GSTIN fields around them. |
+| Branch / warehouse `is_active` and `notes` | Ours. They park a branch or warehouse locally without SAP knowing. SAP's own `disabled` flag **is** always applied, so a branch you re-enable stops being treated as closed on the next push. |
 | Soft-deleted records | A person removed the row. A push answers `409` rather than resurrecting it. Restore it first if the removal was wrong. |
 
 ### Two keys worth confirming
@@ -190,6 +193,11 @@ relisting — and keying on the item would make the second push overwrite the fi
 database enforces this: `sku_mapping` is unique on `(customer, buyer_sku)`. `b1_item_code`
 is still required on every row and must already exist in Item Master, but it identifies
 *what the mapping points at*, not *which mapping this is*.
+
+**Warehouses need their branch first.** `bpl_id` must already name a branch we hold, or
+the push is refused with `409`. A warehouse whose branch is unknown cannot decide place
+of supply, and storing it with a dangling link would surface much later as a rejected
+Sales Order. Push branches, then warehouses.
 
 **Invoices are matched on `DocEntry` first, `invoice_number` second.** `DocEntry` is your
 immutable key, so a re-push carrying it lands on the same row. The fallback matters

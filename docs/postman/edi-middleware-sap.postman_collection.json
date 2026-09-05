@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "EDI Middleware \u2014 SAP B1 Integration",
-    "description": "Everything SAP Business One calls on the Let's Try Foods EDI middleware, and nothing else.\n\nSTART HERE\n1. Set the `baseUrl` and `email` / `password` collection variables.\n2. Run '01 \u00b7 Auth \u2192 Login' \u2014 every other request reuses the token it saves.\n\nONE ENDPOINT FOR ADD AND UPDATE\nEvery push endpoint decides for itself whether a record is new. You never have to ask first and you never get a 409 for sending something twice.\n\n  materials           item_code                          -> ItemCode\n  partners            code                               -> CardCode\n  ship-to/sync        partner_code + buyer_whs_code      -> CardCode + Address\n  bill-to/sync        partner_code + buyer_bill_to_code  -> CardCode + Address\n  sku-mappings/sync   partner_code + buyer_sku           -> CardCode + item\n  invoices            b1_invoice_doc_entry, then invoice_number -> DocEntry\n\nSingle-record endpoints answer 201 when they created and 200 when they updated. Batch (/sync) endpoints answer 200 and report created/updated/skipped counts \u2014 always read `errors[]`, a 200 does not mean every row was accepted.\n\nTWO KEYS WORTH NOTING\nSKU mappings key on `buyer_sku`, not `b1_item_code`: a customer can list one item under several of their own codes, and keying on the item would make the second push overwrite the first. `b1_item_code` is still required and must already exist in Item Master.\n\nInvoices match on `DocEntry` first because it is your immutable key; `invoice_number` is the fallback, since the first push usually has no DocEntry yet.\n\nWHAT AN UPDATE WILL NOT OVERWRITE\nCustomer integration config (source_channel, gmail_label, webhook_secret, asn_sla_hours) \u2014 it describes how we fetch that retailer's orders, which a Business Partner record cannot express. Ops mappings (b1_whs_code, b1_bill_to_code, mapping_status). Soft-deleted rows, which answer 409 rather than being resurrected.\n\nFull contract: docs/sap-master-data-api.md and docs/sap-invoice-api.md.",
+    "description": "Everything SAP Business One calls on the Let's Try Foods EDI middleware, and nothing else.\n\nSTART HERE\n1. Set the `baseUrl` and `email` / `password` collection variables.\n2. Run '01 \u00b7 Auth \u2192 Login' \u2014 every other request reuses the token it saves.\n\nONE ENDPOINT FOR ADD AND UPDATE\nEvery push endpoint decides for itself whether a record is new. You never have to ask first and you never get a 409 for sending something twice.\n\n  materials           item_code                          -> ItemCode\n  partners            code                               -> CardCode\n  ship-to/sync        partner_code + buyer_whs_code      -> CardCode + Address\n  bill-to/sync        partner_code + buyer_bill_to_code  -> CardCode + Address\n  sku-mappings/sync   partner_code + buyer_sku           -> CardCode + item\n  branches            bpl_id                             -> OBPL.BPLId\n  warehouses          whs_code                           -> OWHS.WhsCode\n  invoices            b1_invoice_doc_entry, then invoice_number -> DocEntry\n\nSingle-record endpoints answer 201 when they created and 200 when they updated. Batch (/sync) endpoints answer 200 and report created/updated/skipped counts \u2014 always read `errors[]`, a 200 does not mean every row was accepted.\n\nTWO KEYS WORTH NOTING\nSKU mappings key on `buyer_sku`, not `b1_item_code`: a customer can list one item under several of their own codes, and keying on the item would make the second push overwrite the first. `b1_item_code` is still required and must already exist in Item Master.\n\nWarehouses need their branch first: `bpl_id` must already name a branch we hold, or the push is refused. A warehouse whose branch is unknown cannot decide place of supply.\n\nInvoices match on `DocEntry` first because it is your immutable key; `invoice_number` is the fallback, since the first push usually has no DocEntry yet.\n\nWHAT AN UPDATE WILL NOT OVERWRITE\nCustomer integration config (source_channel, gmail_label, webhook_secret, asn_sla_hours) \u2014 it describes how we fetch that retailer's orders, which a Business Partner record cannot express. Ops mappings (b1_whs_code, b1_bill_to_code, mapping_status). Soft-deleted rows, which answer 409 rather than being resurrected.\n\nFull contract: docs/sap-master-data-api.md and docs/sap-invoice-api.md.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "item": [
@@ -1062,6 +1062,94 @@
       "description": "Our own branches, mirrored from SAP OBPL. Unlike ship-to/bill-to there is no mapping decision here \u2014 SAP owns every business field; only is_active and notes are ours. Under the India localization the branch is the GST registration point that decides CGST/SGST vs IGST on a B1 document.",
       "item": [
         {
+          "name": "Add or update branch  \u2192 201 create / 200 update",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/master-data/branches",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "master-data",
+                "branches"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"bpl_id\": 1,\n  \"bpl_name\": \"Let's Try Foods \\u2014 Mumbai\",\n  \"disabled\": \"N\",\n  \"address\": \"Unit 5, Andheri Industrial Estate\",\n  \"street\": \"Andheri West\",\n  \"block\": \"MIDC\",\n  \"city\": \"Mumbai\",\n  \"zip_code\": \"400053\",\n  \"state\": \"Maharashtra\",\n  \"country\": \"India\",\n  \"gstin\": \"27AADCL9999Q1ZY\"\n}"
+            },
+            "description": "Single endpoint for both. Existence is decided on `bpl_id` (= SAP `OBPL.BPLId`).\n\n\u2022 201 \u2014 created\n\u2022 200 \u2014 updated\n\u2022 409 \u2014 the branch is soft-deleted here; restore it first\n\nTakes the same object `/branches/sync` takes in its list, so the two cannot drift.\n\n`disabled` is SAP's flag and is always applied \u2014 a branch you re-enable stops being treated as closed on the next push. `is_active` and `notes` are ours and are never touched, so a push cannot undo an ops decision to park a branch."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('accepted', () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));",
+                  "console.log(pm.response.code === 201 ? 'CREATED (201)' : 'UPDATED (200)');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "\u2026send it again \u2192 200, values updated",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/master-data/branches",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "master-data",
+                "branches"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"bpl_id\": 1,\n  \"bpl_name\": \"Let's Try Foods \\u2014 Mumbai (renamed)\",\n  \"disabled\": \"N\",\n  \"address\": \"Unit 5, Andheri Industrial Estate\",\n  \"street\": \"Andheri West\",\n  \"block\": \"MIDC\",\n  \"city\": \"Mumbai\",\n  \"zip_code\": \"400053\",\n  \"state\": \"Maharashtra\",\n  \"country\": \"India\",\n  \"gstin\": \"27AADCL9999Q1ZY\"\n}"
+            },
+            "description": "The same `bpl_id` with the name changed. Answers 200 and applies it \u2014 no 409, no duplicate row.\n\nRun 'Add or update branch' first."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('updated, not created', () => pm.response.code === 200);",
+                  "pm.test('new name applied', () => pm.expect(pm.response.json().bpl_name).to.include('renamed'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "Sync branches (from SAP)",
           "request": {
             "method": "POST",
@@ -1167,6 +1255,94 @@
       "name": "11 \u00b7 Master Data \u2014 Warehouse Master (OWHS)",
       "description": "Our own warehouses, mirrored from SAP OWHS. Every warehouse belongs to a branch (OWHS.BPLid), and B1 rejects a marketing document whose warehouse and branch disagree \u2014 so branches must be synced first and re-parenting is a SAP change, not a dashboard one.",
       "item": [
+        {
+          "name": "Add or update warehouse  \u2192 201 create / 200 update",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/master-data/warehouses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "master-data",
+                "warehouses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"whs_code\": \"MUM-01\",\n  \"whs_name\": \"Mumbai Main Store\",\n  \"bpl_id\": 1,\n  \"inactive\": \"N\",\n  \"location\": 1,\n  \"street\": \"Andheri West\",\n  \"block\": \"MIDC\",\n  \"city\": \"Mumbai\",\n  \"zip_code\": \"400053\",\n  \"state\": \"Maharashtra\",\n  \"country\": \"India\"\n}"
+            },
+            "description": "Single endpoint for both. Existence is decided on `whs_code` (= SAP `OWHS.WhsCode`), upper-cased on receipt.\n\n\u2022 201 \u2014 created\n\u2022 200 \u2014 updated\n\u2022 409 \u2014 `bpl_id` names a branch we do not hold, OR the warehouse is soft-deleted here\n\nPUSH BRANCHES FIRST. A warehouse whose branch is unknown cannot decide place of supply, so it is refused rather than stored with a dangling link \u2014 otherwise the failure surfaces much later as a rejected Sales Order.\n\n`is_active` and `notes` are ours and are never touched."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('accepted', () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));",
+                  "console.log(pm.response.code === 201 ? 'CREATED (201)' : 'UPDATED (200)');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "\u2026send it again \u2192 200, values updated",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/master-data/warehouses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "master-data",
+                "warehouses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"whs_code\": \"MUM-01\",\n  \"whs_name\": \"Mumbai Main Store (renamed)\",\n  \"bpl_id\": 1,\n  \"inactive\": \"N\",\n  \"location\": 1,\n  \"street\": \"Andheri West\",\n  \"block\": \"MIDC\",\n  \"city\": \"Mumbai\",\n  \"zip_code\": \"400053\",\n  \"state\": \"Maharashtra\",\n  \"country\": \"India\"\n}"
+            },
+            "description": "The same `whs_code` with the name changed. Answers 200 and applies it.\n\nRun 'Add or update warehouse' first."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('updated, not created', () => pm.response.code === 200);",
+                  "pm.test('new name applied', () => pm.expect(pm.response.json().whs_name).to.include('renamed'));"
+                ]
+              }
+            }
+          ]
+        },
         {
           "name": "Sync warehouses (from SAP)",
           "request": {

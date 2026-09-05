@@ -27,19 +27,21 @@ import uuid
 from typing import TYPE_CHECKING
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from app.api.deps import get_sync_db
 from app.api.routes.auth import get_current_user
 from app.api.routes.master_data import _reject_immutable_changes
 from app.schemas.api import (
     BranchMasterResponse,
+    BranchMasterSyncItem,
     BranchMasterSyncRequest,
     BranchMasterUpdate,
     MasterDataSyncResult,
     PaginatedResponse,
     UserResponse,
     WarehouseMasterResponse,
+    WarehouseMasterSyncItem,
     WarehouseMasterSyncRequest,
     WarehouseMasterUpdate,
 )
@@ -211,6 +213,81 @@ def update_branch(
         )
     ).scalar_one()
     return _branch_to_response(branch, count)
+
+
+@router.post("/branches", response_model=BranchMasterResponse)
+def upsert_branch(
+    body: BranchMasterSyncItem,
+    response: Response,
+    db: Session = Depends(get_sync_db),
+    current_user: UserResponse = Depends(get_current_user),
+) -> BranchMasterResponse:
+    """
+    Add or update one branch, keyed on `bpl_id` (= SAP `OBPL.BPLId`).
+
+    The single-record twin of `/branches/sync`, for the same reason the other master
+    data has one: SAP does not track what we already hold, and making it ask first —
+    POST, read a conflict, switch to PUT — is two round trips and a race.
+
+    **201 on create, 200 on update.** The body is the same object `/branches/sync`
+    takes in its list, so the two cannot drift apart.
+
+    `disabled` is SAP's flag and is always applied — a branch SAP has just re-enabled
+    must stop being treated as closed. `is_active` and `notes` are ours and are never
+    touched, so a push cannot undo an ops decision to park a branch.
+    """
+    from sqlalchemy import select
+
+    from app.models.audit_log import AuditLog
+    from app.models.master_data import BranchMaster
+
+    branch = db.execute(
+        select(BranchMaster).where(BranchMaster.bpl_id == body.bpl_id)
+    ).scalar_one_or_none()
+
+    if branch is not None and branch.deleted_at is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Branch BPLId {body.bpl_id} is soft-deleted here. Restore it before "
+                f"syncing, so an automated push cannot undo a deliberate removal."
+            ),
+        )
+
+    fields = body.model_dump(exclude={"bpl_id"} | _BRANCH_DERIVED | set(_OPS_OWNED))
+    created = branch is None
+    if created:
+        branch = BranchMaster(bpl_id=body.bpl_id, **fields)
+        db.add(branch)
+    else:
+        for key, value in fields.items():
+            setattr(branch, key, value)
+
+    db.add(AuditLog(
+        user_email=current_user.email,
+        action="create_branch" if created else "update_branch",
+        entity_type="BranchMaster",
+        payload=body.model_dump(mode="json"),
+    ))
+    db.commit()
+    db.refresh(branch)
+    response.status_code = 201 if created else 200
+    return _branch_to_response(branch, _warehouse_count(db, branch.id))
+
+
+def _warehouse_count(db: Session, branch_id: uuid.UUID) -> int:
+    """Live warehouses under a branch — the one field the response carries that the
+    branch row does not."""
+    from sqlalchemy import func, select
+
+    from app.models.master_data import WarehouseMaster
+
+    return db.execute(
+        select(func.count()).select_from(WarehouseMaster).where(
+            WarehouseMaster.branch_id == branch_id,
+            WarehouseMaster.deleted_at.is_(None),
+        )
+    ).scalar_one()
 
 
 @router.post("/branches/sync", response_model=MasterDataSyncResult)
@@ -391,6 +468,88 @@ def update_warehouse(
         branch.bpl_id if branch else 0,
         branch.bpl_name if branch else None,
     )
+
+
+@router.post("/warehouses", response_model=WarehouseMasterResponse)
+def upsert_warehouse(
+    body: WarehouseMasterSyncItem,
+    response: Response,
+    db: Session = Depends(get_sync_db),
+    current_user: UserResponse = Depends(get_current_user),
+) -> WarehouseMasterResponse:
+    """
+    Add or update one warehouse, keyed on `whs_code` (= SAP `OWHS.WhsCode`).
+
+    The single-record twin of `/warehouses/sync`, taking the same object that endpoint
+    takes in its list. **201 on create, 200 on update.**
+
+    `bpl_id` must already name a branch we hold — **push the branch first**. A warehouse
+    pointing at a branch that does not exist is refused rather than stored with a
+    dangling link, the same rule that makes a SKU mapping depend on Item Master: a
+    warehouse whose branch is unknown cannot decide place of supply, and the failure
+    would surface much later as a rejected Sales Order.
+
+    `is_active` and `notes` are ours and are never touched, so a push cannot undo an
+    ops decision to park a warehouse.
+    """
+    from sqlalchemy import select
+
+    from app.models.audit_log import AuditLog
+    from app.models.master_data import BranchMaster, WarehouseMaster
+
+    code = body.whs_code.strip().upper()
+
+    branch = db.execute(
+        select(BranchMaster).where(
+            BranchMaster.bpl_id == body.bpl_id,
+            BranchMaster.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if branch is None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Branch BPLId {body.bpl_id} is not in Branch Master, so warehouse "
+                f"{code} has nothing to belong to. Push the branch first — "
+                f"POST /api/master-data/branches."
+            ),
+        )
+
+    warehouse = db.execute(
+        select(WarehouseMaster).where(WarehouseMaster.whs_code == code)
+    ).scalar_one_or_none()
+
+    if warehouse is not None and warehouse.deleted_at is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Warehouse {code} is soft-deleted here. Restore it before syncing, so "
+                f"an automated push cannot undo a deliberate removal."
+            ),
+        )
+
+    fields = body.model_dump(
+        exclude={"whs_code", "bpl_id"} | _WAREHOUSE_DERIVED | set(_OPS_OWNED)
+    )
+    created = warehouse is None
+    if created:
+        warehouse = WarehouseMaster(whs_code=code, branch_id=branch.id, **fields)
+        db.add(warehouse)
+    else:
+        warehouse.branch_id = branch.id
+        for key, value in fields.items():
+            setattr(warehouse, key, value)
+
+    db.add(AuditLog(
+        user_email=current_user.email,
+        action="create_warehouse" if created else "update_warehouse",
+        entity_type="WarehouseMaster",
+        payload=body.model_dump(mode="json"),
+    ))
+    db.commit()
+    db.refresh(warehouse)
+    response.status_code = 201 if created else 200
+    return _warehouse_to_response(warehouse, branch.bpl_id, branch.bpl_name)
 
 
 @router.post("/warehouses/sync", response_model=MasterDataSyncResult)

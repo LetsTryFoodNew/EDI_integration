@@ -240,3 +240,66 @@ class TestMalformedJsonIsReadable:
         )
         assert where["problem"] == "bad"
         assert where["at"].startswith("line 1,")
+
+
+class TestBranchAndWarehouseKeys:
+    """
+    Branches and warehouses get the same single-record add-or-update the rest of master
+    data has, keyed on the fields SAP identifies them by: `bpl_id` (OBPL.BPLId) and
+    `whs_code` (OWHS.WhsCode).
+
+    The batch `/sync` endpoints already upserted on exactly those keys — what was
+    missing was the single-object form, so SAP had to wrap one record in a list.
+    """
+
+    def test_branch_sync_and_single_share_one_key(self) -> None:
+        # If these ever diverge, a record created through one endpoint would be
+        # duplicated by the other.
+        import inspect
+
+        from app.api.routes import branch_warehouse as bw
+
+        single = inspect.getsource(bw.upsert_branch)
+        batch = inspect.getsource(bw.sync_branches)
+        assert "BranchMaster.bpl_id ==" in single
+        assert "BranchMaster.bpl_id ==" in batch
+
+    def test_warehouse_sync_and_single_share_one_key(self) -> None:
+        import inspect
+
+        from app.api.routes import branch_warehouse as bw
+
+        single = inspect.getsource(bw.upsert_warehouse)
+        batch = inspect.getsource(bw.sync_warehouses)
+        assert "WarehouseMaster.whs_code ==" in single
+        assert "WarehouseMaster.whs_code ==" in batch
+
+    def test_both_take_the_same_body_as_their_batch_twin(self) -> None:
+        # Reusing the sync item schema is what stops single and batch drifting apart.
+        import inspect
+
+        from app.api.routes import branch_warehouse as bw
+
+        assert "BranchMasterSyncItem" in str(inspect.signature(bw.upsert_branch))
+        assert "WarehouseMasterSyncItem" in str(inspect.signature(bw.upsert_warehouse))
+
+    def test_ops_owned_fields_are_excluded_from_both(self) -> None:
+        # is_active and notes are ours; a SAP push must not undo a parked branch.
+        import inspect
+
+        from app.api.routes import branch_warehouse as bw
+
+        assert bw._OPS_OWNED == ("is_active", "notes")
+        for fn in (bw.upsert_branch, bw.upsert_warehouse):
+            assert "set(_OPS_OWNED)" in inspect.getsource(fn)
+
+    def test_warehouse_requires_its_branch_to_exist(self) -> None:
+        # A warehouse whose branch is unknown cannot decide place of supply, and the
+        # failure would otherwise surface much later as a rejected Sales Order.
+        import inspect
+
+        from app.api.routes import branch_warehouse as bw
+
+        src = inspect.getsource(bw.upsert_warehouse)
+        assert "not in Branch Master" in src
+        assert "status_code=409" in src
