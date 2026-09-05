@@ -863,7 +863,7 @@
               "mode": "raw",
               "raw": "{\n  \"invoices\": [\n    {\n      \"invoice_number\": \"INV/2026/00871\",\n      \"invoice_date\": \"2026-08-18\",\n      \"b1_sales_order_doc_entry\": 4321,\n      \"partner_code\": \"ZEPTO\",\n      \"po_number\": \"{{poNumber}}\",\n      \"b1_invoice_doc_entry\": 9912,\n      \"b1_invoice_doc_num\": 100455,\n      \"irn\": null,\n      \"eway_bill_number\": \"381005498765\",\n      \"eway_bill_date\": \"2026-08-18\",\n      \"subtotal_amount\": 10450.0,\n      \"cgst_amount\": 627.0,\n      \"sgst_amount\": 627.0,\n      \"igst_amount\": 0.0,\n      \"cess_amount\": 0.0,\n      \"round_off\": 0.0,\n      \"grand_total\": 11704.0,\n      \"shipment_date\": \"2026-08-18\",\n      \"carrier\": \"Delhivery\",\n      \"tracking_number\": \"DL8827361925\",\n      \"line_items\": [\n        {\n          \"b1_item_code\": \"FG-ALM-200\",\n          \"buyer_sku\": \"{{buyerSku}}\",\n          \"po_line_number\": 1,\n          \"description\": \"Roasted Almonds 200g\",\n          \"hsn_code\": \"20081910\",\n          \"qty\": 50,\n          \"uom\": \"PCS\",\n          \"unit_price\": 209.0,\n          \"taxable_amount\": 10450.0,\n          \"cgst_rate\": 6.0,\n          \"cgst_amount\": 627.0,\n          \"sgst_rate\": 6.0,\n          \"sgst_amount\": 627.0,\n          \"igst_rate\": 0.0,\n          \"igst_amount\": 0.0,\n          \"cess_rate\": 0.0,\n          \"cess_amount\": 0.0,\n          \"line_total\": 11704.0,\n          \"batch_number\": \"LTF-202608-A\",\n          \"expiry_date\": \"2027-08-17\"\n        }\n      ]\n    }\n  ]\n}"
             },
-            "description": "Idempotent on invoice_number \u2014 re-pushing updates (typically to add the IRN) and never raises a second ASN.\n\n{{poNumber}} and {{buyerSku}} are filled by 'List POs' and 'Get PO detail'. Run those first, or hardcode real values.\n\nALWAYS read results[] \u2014 an invoice can be stored but HELD (asn_dispatched=false) with the reason in issues[].\n\nbatch_number takes a string here; see 'Push invoice \u2014 line split across two batches' for the multi-batch form."
+            "description": "Single endpoint for add and update. Safe to send repeatedly.\n\nHOW WE DECIDE IT IS THE SAME INVOICE\n`b1_invoice_doc_entry` is tried first \u2014 it is your immutable key, so a re-push carrying it lands on the same row whatever else changed. Sending it on every push is recommended.\n\n`invoice_number` is the fallback and stays unique. It matters because the first push of an invoice usually has no DocEntry yet (B1 assigns it on posting, the IRN later still), and the number is what the retailer reconciles against.\n\nREFUSED, NOT APPLIED: a DocEntry we already hold arriving under a DIFFERENT invoice_number. B1 does not renumber a posted invoice, so that means a cancel-and-repost or a wrong DocEntry \u2014 and renaming a stored invoice would break the ASN the retailer already holds against the old number.\n\nThe common re-push is the IRN: push the invoice immediately (we store it and send the ASN), then push again once the IRP returns the IRN and we fill it in.\n\n{{poNumber}} and {{buyerSku}} come from 'List POs' / 'Get PO detail'. Run those first, or hardcode real values.\n\nALWAYS read results[] \u2014 an invoice can be stored but HELD (asn_dispatched=false) with the reason in issues[].\n\nbatch_number takes a string here; see 'line split across two batches' for the multi-batch form."
           },
           "event": [
             {
@@ -1224,7 +1224,7 @@
           ]
         },
         {
-          "name": "Create customer",
+          "name": "Add or update customer  \u2192 201 create / 200 update",
           "request": {
             "method": "POST",
             "header": [
@@ -1252,7 +1252,7 @@
               "mode": "raw",
               "raw": "{\n  \"code\": \"DEMOMART\",\n  \"name\": \"Demo Mart Retail Private Limited\",\n  \"source_channel\": \"EMAIL\",\n  \"gmail_label\": \"DEMOMART_PO\",\n  \"webhook_secret\": null,\n  \"asn_sla_hours\": 24,\n  \"b1_card_code\": \"C00099\",\n  \"gstin\": \"27AAECD1234K1Z5\",\n  \"pan_card\": \"AAECD1234K\",\n  \"business_type\": \"Quick Commerce\",\n  \"group_name\": \"Modern Trade\",\n  \"phone_numbers\": [\n    \"+919812345601\",\n    \"+911244567890\"\n  ],\n  \"email_address\": \"po@demomart.in\",\n  \"is_active\": true\n}"
             },
-            "description": "Onboards a new trading partner. `code` is the natural key and is immutable afterwards.\n\nThe response carries `warnings` \u2014 e.g. EMAIL channel with no gmail_label, or WEBHOOK with no webhook_secret. A partner can exist yet receive nothing; warnings tell you which."
+            "description": "Single endpoint for both. Existence is decided on `code` (= SAP `CardCode`).\n\n\u2022 201 \u2014 created\n\u2022 200 \u2014 updated\n\u2022 409 \u2014 the customer is soft-deleted here; restore it first\n\u2022 422 \u2014 `source_channel` is not one of API / WEBHOOK / EMAIL / PORTAL / MANUAL\n\nWHAT AN UPDATE WILL NOT OVERWRITE\n`source_channel`, `gmail_label`, `webhook_secret` and `asn_sla_hours` describe how we FETCH this retailer's orders. A SAP Business Partner record has nothing to say about that, so they are written when the customer is created and thereafter only where still empty.\n\nThis matters: `source_channel` defaults to MANUAL in this schema, so sending it on a refresh is indistinguishable from omitting it. Applying that would demote a live API customer to MANUAL and stop its PO polling with no error anywhere. It is ignored unless the field is genuinely unset.\n\nCreating the customer does not make POs flow \u2014 ingestion also needs an adapter and a parser in our code for this code. The response `warnings` say what is missing."
           },
           "event": [
             {
@@ -1260,17 +1260,60 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "if (pm.response.code === 200) {",
+                  "pm.test('accepted', () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));",
+                  "console.log(pm.response.code === 201 ? 'CREATED (201)' : 'UPDATED (200)');",
+                  "if (pm.response.code < 300) {",
                   "    const b = pm.response.json();",
-                  "    const v = b.id;",
-                  "    if (v) {",
-                  "        pm.collectionVariables.set('partnerId', v);",
-                  "        console.log('partnerId = ' + v);",
-                  "    } else {",
-                  "        console.log('No rows \u2014 partnerId not set. Seed data first.');",
-                  "    }",
-                  "}",
-                  "pm.test('ok', () => pm.response.to.have.status(200));"
+                  "    if (b.id) pm.collectionVariables.set('partnerId', b.id);",
+                  "    if (b.warnings && b.warnings.length) console.log('warnings:', b.warnings.join(' | '));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "\u2026send it again without integration config \u2192 200, config survives",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/master-data/partners",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "master-data",
+                "partners"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"DEMOMART\",\n  \"name\": \"Demo Mart Retail Pvt Ltd (renamed)\",\n  \"b1_card_code\": \"C00099\",\n  \"gstin\": \"27AAECD1234K1Z5\",\n  \"pan_card\": \"AAECD1234K\",\n  \"business_type\": \"Quick Commerce\",\n  \"group_name\": \"Modern Trade\",\n  \"phone_numbers\": [\n    \"+919812345601\",\n    \"+911244567890\"\n  ],\n  \"email_address\": \"po@demomart.in\",\n  \"is_active\": true\n}"
+            },
+            "description": "A routine master-data refresh: name and GSTIN, no integration config.\n\nAnswers 200, applies the master data, and leaves `source_channel` = EMAIL and `gmail_label` = DEMOMART_PO exactly as they were. This is the case that must never regress \u2014 losing them stops PO ingestion silently.\n\nRun 'Add or update customer' first."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('updated, not created', () => pm.response.code === 200);",
+                  "const b = pm.response.json();",
+                  "pm.test('master data applied', () => pm.expect(b.name).to.include('renamed'));",
+                  "pm.test('channel survived', () => pm.expect(b.source_channel).to.eql('EMAIL'));",
+                  "pm.test('gmail label survived', () => pm.expect(b.gmail_label).to.eql('DEMOMART_PO'));"
                 ]
               }
             }
@@ -1439,7 +1482,7 @@
           ]
         },
         {
-          "name": "Create item",
+          "name": "Add or update item  \u2192 201 create / 200 update",
           "request": {
             "method": "POST",
             "header": [
@@ -1466,7 +1509,8 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"item_code\": \"FG-ALM-200\",\n  \"item_name\": \"Roasted Almonds 200g\",\n  \"frgn_name\": \"Roasted Almonds 200g\",\n  \"hsn\": \"20081910\",\n  \"tax_rate\": 12.0,\n  \"itms_grp_cod\": 104,\n  \"items_group_name\": \"Dry Fruits\",\n  \"invntry_uom\": \"PCS\",\n  \"sal_unit_msr\": \"PCS\",\n  \"vat_group_pu\": \"GST12\",\n  \"vat_group_sa\": \"GST12\",\n  \"case_size\": 24,\n  \"lot_size\": 1,\n  \"grammage\": \"200g\",\n  \"ean_code\": \"8901234560017\",\n  \"mrp\": 349.0,\n  \"frozen_for\": false,\n  \"valid_for\": 1,\n  \"is_active\": true\n}"
-            }
+            },
+            "description": "Single endpoint for both. Existence is decided on `item_code` (= SAP `ItemCode`) alone: absent means create, present means update.\n\n\u2022 201 \u2014 created\n\u2022 200 \u2014 updated\n\u2022 409 \u2014 the item is soft-deleted here; restore it first, so an automated push cannot undo a deliberate removal.\n\nSafe to send repeatedly. You never have to ask whether we already hold it.\n\nFor a batch, use 'Sync items' in this folder \u2014 same behaviour, many rows, reports created/updated/skipped counts."
           },
           "event": [
             {
@@ -1474,17 +1518,54 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "if (pm.response.code === 200) {",
-                  "    const b = pm.response.json();",
-                  "    const v = b.id;",
-                  "    if (v) {",
-                  "        pm.collectionVariables.set('materialId', v);",
-                  "        console.log('materialId = ' + v);",
-                  "    } else {",
-                  "        console.log('No rows \u2014 materialId not set. Seed data first.');",
-                  "    }",
-                  "}",
-                  "pm.test('ok', () => pm.response.to.have.status(200));"
+                  "const created = pm.response.code === 201;",
+                  "pm.test('accepted', () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));",
+                  "console.log(created ? 'CREATED (201)' : 'UPDATED (200)');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "\u2026send it again \u2192 200, values updated",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/master-data/materials",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "master-data",
+                "materials"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"item_code\": \"FG-ALM-200\",\n  \"item_name\": \"Roasted Almonds 200g (renamed)\",\n  \"frgn_name\": \"Roasted Almonds 200g\",\n  \"hsn\": \"20081910\",\n  \"tax_rate\": 12.0,\n  \"itms_grp_cod\": 104,\n  \"items_group_name\": \"Dry Fruits\",\n  \"invntry_uom\": \"PCS\",\n  \"sal_unit_msr\": \"PCS\",\n  \"vat_group_pu\": \"GST12\",\n  \"vat_group_sa\": \"GST12\",\n  \"case_size\": 24,\n  \"lot_size\": 1,\n  \"grammage\": \"200g\",\n  \"ean_code\": \"8901234560017\",\n  \"mrp\": 499.0,\n  \"frozen_for\": false,\n  \"valid_for\": 1,\n  \"is_active\": true\n}"
+            },
+            "description": "The same `item_code` with two fields changed. Answers 200 and applies them \u2014 no 409, no duplicate row.\n\nRun 'Add or update item' first."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('updated, not created', () => pm.response.code === 200);",
+                  "const b = pm.response.json();",
+                  "pm.test('new name applied', () => pm.expect(b.item_name).to.include('renamed'));"
                 ]
               }
             }

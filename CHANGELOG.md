@@ -1,5 +1,37 @@
 # Changelog
 
+## A Postman collection to hand the SAP team (2026-09-05)
+
+The full collection is 81 requests including dashboards, the PO lifecycle, the inboxes
+and ops-only edit routes. Handing a partner a collection full of buttons they should
+not press invites exactly that, so `edi-middleware-sap.postman_collection.json` carries
+only what SAP calls — health, auth, the master data they push, and invoices. 27
+requests across 10 folders.
+
+Derived from the full collection by a script rather than hand-written, so the shared
+copy cannot drift from the one we test against, and it fails loudly if a request it
+expects has been renamed. It ships with no credentials, no hostnames, no account email,
+and only the variables its own requests reference.
+
+Its description carries the contract SAP needs before reading a single request: which
+field decides existence on each endpoint, that single-record endpoints answer 201 on
+create and 200 on update, that a batch 200 does not mean every row was accepted, and
+what an update will not overwrite.
+
+Both collections now reflect the add-or-update work:
+
+- **Add or update item / customer** replace the old create-only requests, with the
+  status codes and the soft-delete refusal spelled out.
+- **Two "…send it again" requests** demonstrate the repeat push. The customer one omits
+  integration config and asserts `source_channel` and `gmail_label` survive — the case
+  that must never regress, since losing them stops PO ingestion with no error anywhere.
+- **Push invoice from SAP** documents matching on `DocEntry` first, `invoice_number` as
+  the fallback, and the one case that is refused rather than applied.
+
+Verified by running every POST in the shared collection against the API with its own
+bodies: 201 then 200 on both upserts, integration config intact, and every sync
+reporting sane created/updated/skipped counts.
+
 ## One endpoint for add and update, keyed on what SAP calls the record (2026-09-05)
 
 SAP asked for a single API per resource that both adds and updates. Two of the six
