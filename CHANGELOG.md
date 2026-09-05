@@ -1,5 +1,45 @@
 # Changelog
 
+## One endpoint for add and update, keyed on what SAP calls the record (2026-09-05)
+
+SAP asked for a single API per resource that both adds and updates. Two of the six
+were create-only and answered `409` on a repeat, which made SAP ask first — POST, read
+the conflict, switch to PUT — two round trips, a race between them, and a `409` that
+said nothing actionable.
+
+    POST /api/master-data/materials    item_code   -> ItemCode   201 create / 200 update
+    POST /api/master-data/partners     code        -> CardCode   201 create / 200 update
+    POST /api/master-data/ship-to/sync partner_code + buyer_whs_code       already upserted
+    POST /api/master-data/bill-to/sync partner_code + buyer_bill_to_code   already upserted
+    POST /api/master-data/sku-mappings/sync  partner_code + buyer_sku      already upserted
+    POST /api/invoices                 b1_invoice_doc_entry, then invoice_number
+
+**Invoices now match on `DocEntry` first.** It is SAP's immutable key, so a re-push
+carrying it lands on the same row whatever else changed. `invoice_number` stays the
+fallback and stays unique: the first push of an invoice usually has no DocEntry yet —
+B1 assigns it on posting and the IRN arrives later still — and the number is what the
+retailer reconciles against. A DocEntry arriving under a *different* invoice_number is
+**refused**, not applied: B1 does not renumber a posted invoice, so it means a
+cancel-and-repost or a wrong DocEntry, and renaming a stored invoice would break the
+ASN the retailer already holds against the old number.
+
+**What an update will not overwrite.** A Business Partner record has nothing to say
+about how we fetch that retailer's orders, so `source_channel`, `gmail_label`,
+`webhook_secret` and `asn_sla_hours` are written on create and thereafter only where
+still empty. `TradingPartnerCreate` defaults `source_channel` to MANUAL, which makes
+"MANUAL" on an update indistinguishable from "not supplied" — applying it would demote
+a live API partner and stop its polling with no error anywhere. Soft-deleted rows
+answer `409` rather than being resurrected: `deleted_at` was set by a person.
+
+**Two keys differ from the table SAP sent, deliberately.** SKU mappings key on
+`buyer_sku`, not `b1_item_code` — a customer can list one item under several of their
+own codes, and keying on the item would make the second push overwrite the first;
+`sku_mapping` is unique on `(customer, buyer_sku)` in the schema. And invoices carry
+the `invoice_number` fallback described above rather than DocEntry alone.
+
+`docs/sap-master-data-api.md` §4a and `docs/sap-invoice-api.md` §6 document the
+contract for whoever writes the SAP side.
+
 ## DMart removed as a trading partner (2026-08-25)
 
 Removed at the user's request — DMart never had a working parser (no `DmartEmailAdapter`/

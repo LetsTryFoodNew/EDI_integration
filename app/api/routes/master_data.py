@@ -20,7 +20,7 @@ import uuid
 from typing import TYPE_CHECKING
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from app.api.deps import get_sync_db
 from app.api.routes.auth import get_current_user
@@ -177,19 +177,108 @@ def list_partners(
     )
 
 
-@router.post("/partners", response_model=TradingPartnerWriteResponse, status_code=201)
-def create_partner(
+def _update_partner_from_push(
+    db: object,
+    partner: object,
+    body: object,
+    request: object,
+    current_user: object,
+    response: object,
+) -> TradingPartnerWriteResponse:
+    """
+    Apply a repeat push to a partner that already exists.
+
+    Master data is always taken. Integration config is applied only where the caller
+    sent a value *and* nothing is set locally, so a Business Partner refresh can fill a
+    gap but never overwrite a working setting -- switching a live API partner to MANUAL
+    would stop its ingestion with no error anywhere.
+    """
+    from app.models._enums import SourceChannel
+    from app.models.audit_log import AuditLog
+
+    partner.name = body.name
+    partner.is_active = _active_flag(body)
+    for field in ("b1_card_code", "gstin", "pan_card", "business_type",
+                  "group_name", "phone_numbers", "email_address"):
+        value = getattr(body, field, None)
+        if value is not None:
+            setattr(partner, field, value)
+
+    filled: list[str] = []
+    for field in _PARTNER_INTEGRATION_FIELDS:
+        sent = getattr(body, field, None)
+        if sent is None:
+            continue
+        if field == "source_channel":
+            # The schema defaults this to MANUAL, so "MANUAL" on an update is
+            # indistinguishable from "not supplied" and must never demote a live
+            # partner. Only an explicit non-MANUAL value on an unset row is applied.
+            if str(sent).strip().upper() == SourceChannel.MANUAL.value:
+                continue
+            try:
+                sent = SourceChannel(str(sent).strip().upper())
+            except ValueError:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"source_channel '{getattr(body, field)}' is not valid. "
+                        f"Allowed: {', '.join(c.value for c in SourceChannel)}."
+                    ),
+                ) from None
+            if partner.source_channel is not SourceChannel.MANUAL:
+                continue
+        elif field == "asn_sla_hours":
+            # Has a schema default too; only meaningful when the row has none.
+            if getattr(partner, field, None) is not None:
+                continue
+        elif getattr(partner, field, None):
+            continue
+        setattr(partner, field, sent)
+        filled.append(field)
+
+    db.add(AuditLog(
+        user_email=current_user.email,
+        action="update_partner",
+        entity_type="TradingPartner",
+        entity_id=str(partner.id),
+        payload={"source": "upsert", "integration_fields_filled": filled,
+                 **body.model_dump(mode="json")},
+        ip_address=request.client.host if request.client else None,
+    ))
+    db.commit()
+    db.refresh(partner)
+    log.info("partner.updated", code=partner.code, filled=filled)
+    response.status_code = 200
+    return _partner_write_response(partner)
+
+
+#: Set only when the partner is created. A push from SAP describes a Business Partner,
+#: which has nothing to say about how we fetch that partner's orders -- overwriting
+#: these on every sync would silently unwire a working integration.
+_PARTNER_INTEGRATION_FIELDS = ("source_channel", "gmail_label", "webhook_secret",
+                               "asn_sla_hours")
+
+
+@router.post("/partners", response_model=TradingPartnerWriteResponse)
+def upsert_partner(
     body: TradingPartnerCreate,
     request: Request,
+    response: Response,
     db: Session = Depends(get_sync_db),
     current_user: UserResponse = Depends(get_current_user),
 ) -> TradingPartnerWriteResponse:
     """
-    Onboard a new trading partner.
+    Add or update one trading partner, keyed on `code` (= SAP `CardCode`).
 
-    `POST /partners/sync` stays update-only, so this is the only way a partner comes
-    into existence. Once the row exists, sync keeps its master data current by matching
-    on `code`.
+    One endpoint for both, because the caller is SAP and it does not track what we
+    already hold. **201 on create, 200 on update.**
+
+    Master data is taken from every push. Integration config -- source_channel,
+    gmail_label, webhook_secret, asn_sla_hours -- is written **only on create**, and on
+    an update is applied only where the field is explicitly sent and currently unset.
+    A SAP Business Partner record cannot express how we poll that partner's orders, so
+    a routine master-data refresh must not be able to switch a live API partner to
+    MANUAL and stop its ingestion.
 
     Creating the row does not by itself make POs flow: ingestion also needs an adapter
     (how to fetch) and a parser (how to read their format) registered in code for this
@@ -206,14 +295,18 @@ def create_partner(
     existing = db.execute(
         select(TradingPartner).where(TradingPartner.code == code)
     ).scalar_one_or_none()
-    if existing:
+
+    if existing is not None and existing.deleted_at is not None:
         raise HTTPException(
             status_code=409,
             detail=(
-                f"Partner '{code}' already exists. Use PUT /api/master-data/partners/"
-                f"{existing.id} to edit it, or POST /partners/sync to refresh its master data."
+                f"Partner '{code}' is soft-deleted here. Restore it before syncing, so "
+                f"an automated push cannot undo a deliberate removal."
             ),
         )
+
+    if existing is not None:
+        return _update_partner_from_push(db, existing, body, request, current_user, response)
 
     try:
         channel = SourceChannel(body.source_channel.strip().upper())
@@ -255,6 +348,7 @@ def create_partner(
     db.refresh(partner)
 
     log.info("partner.created", code=code, channel=str(channel))
+    response.status_code = 201
     return _partner_write_response(partner)
 
 
@@ -563,30 +657,59 @@ def list_materials(
     )
 
 
-@router.post("/materials", response_model=MaterialMasterResponse, status_code=201)
-def create_material(
+@router.post("/materials", response_model=MaterialMasterResponse)
+def upsert_material(
     body: MaterialMasterCreate,
     request: Request,
+    response: Response,
     db: Session = Depends(get_sync_db),
     current_user: UserResponse = Depends(get_current_user),
 ) -> MaterialMasterResponse:
-    """Manual single-item add (e.g. before SAP has the item)."""
+    """
+    Add or update one item, keyed on `item_code` (= SAP `ItemCode`).
+
+    One endpoint for both, because the caller is SAP and SAP does not track what we
+    already hold. Making it ask first — POST, read 409, switch to PUT — turns every
+    item into two round trips and a race, and the 409 told it nothing it could act on.
+
+    Existence is decided on `item_code` alone: present means update, absent means
+    create. **201 on create, 200 on update**, so the caller can tell which happened
+    without diffing.
+
+    A soft-deleted item is not resurrected silently -- it is refused, because
+    `deleted_at` was set by a person and an automated push should not undo that.
+    """
     from sqlalchemy import select
 
     from app.models.audit_log import AuditLog
     from app.models.master_data import MaterialMaster
 
-    existing = db.execute(
-        select(MaterialMaster).where(MaterialMaster.item_code == body.item_code)
+    code = body.item_code.strip().upper()
+    material = db.execute(
+        select(MaterialMaster).where(MaterialMaster.item_code == code)
     ).scalar_one_or_none()
-    if existing:
-        raise HTTPException(status_code=409, detail="Item code already exists")
 
-    material = MaterialMaster(**body.model_dump())
-    db.add(material)
+    if material is not None and material.deleted_at is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Item '{code}' is soft-deleted here. Restore it before syncing, so an "
+                f"automated push cannot undo a deliberate removal."
+            ),
+        )
+
+    created = material is None
+    fields = body.model_dump(exclude={"item_code"})
+    if created:
+        material = MaterialMaster(item_code=code, **fields)
+        db.add(material)
+    else:
+        for key, value in fields.items():
+            setattr(material, key, value)
+
     db.add(AuditLog(
         user_email=current_user.email,
-        action="create_material",
+        action="create_material" if created else "update_material",
         entity_type="MaterialMaster",
         payload=body.model_dump(mode="json"),
         ip_address=request.client.host if request.client else None,
@@ -594,6 +717,7 @@ def create_material(
     db.flush()
     db.commit()
     db.refresh(material)
+    response.status_code = 201 if created else 200
     return MaterialMasterResponse.model_validate(material)
 
 

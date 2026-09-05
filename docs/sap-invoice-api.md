@@ -146,7 +146,8 @@ wins.
 
 | Field | Required | Notes |
 |---|---|---|
-| `invoice_number` | **yes** | Must be unique. This is the idempotency key |
+| `invoice_number` | **yes** | Must be unique. Identity key when `b1_invoice_doc_entry` is absent |
+| `b1_invoice_doc_entry` | no | Your `DocEntry`. Preferred identity key — see [§6](#6-re-pushing-an-invoice) |
 | `invoice_date` | **yes** | `YYYY-MM-DD` |
 | `line_items` | **yes** | At least 1, at most 500 |
 | `line_items[].b1_item_code` | **yes** | |
@@ -225,8 +226,24 @@ is lost — but nothing reaches the retailer until someone has looked.
 
 ## 6. Re-pushing an invoice
 
-**Safe and expected.** `invoice_number` is the idempotency key: re-sending updates the
+**Safe and expected.** One endpoint does both add and update: re-sending updates the
 existing record rather than creating a duplicate.
+
+**How we decide it is the same invoice.** `b1_invoice_doc_entry` is tried first — it is
+your immutable key, so a re-push carrying it lands on the same row whatever else has
+changed. If it is absent, or names nothing we hold, we fall back to `invoice_number`.
+That fallback matters because the first push of an invoice usually has no `DocEntry`
+yet, and `invoice_number` is the legal number the retailer reconciles against.
+
+Sending `b1_invoice_doc_entry` on every push is recommended: it makes the match exact
+and removes any dependence on the number.
+
+> **One case is refused rather than applied.** If a `DocEntry` we already hold arrives
+> naming a *different* `invoice_number`, the push is rejected. B1 does not renumber a
+> posted invoice, so this means either a cancel-and-repost that reused the `DocEntry`,
+> or the wrong `DocEntry` on the payload. Quietly renaming a stored invoice would break
+> the ASN the retailer already holds against the old number. Cancel the old invoice with
+> us first if it really was reposted.
 
 The common case is the IRN. B1 usually has no IRN at the moment the invoice is posted, so:
 

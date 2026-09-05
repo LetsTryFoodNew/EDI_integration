@@ -75,7 +75,6 @@ def ingest_invoice(
     Commits nothing — the caller owns the transaction so a batch is all-or-nothing
     per request. Returns an InvoiceResult describing what happened.
     """
-    from app.models.invoice import EdiInvoice
 
     result = InvoiceResult(payload.invoice_number)
 
@@ -96,10 +95,25 @@ def ingest_invoice(
 
     result.po_number = po.buyer_po_number
 
-    from sqlalchemy import select
-    existing = db.execute(
-        select(EdiInvoice).where(EdiInvoice.invoice_number == payload.invoice_number)
-    ).scalar_one_or_none()
+    existing = _find_existing_invoice(db, payload)
+    if existing is not None and existing.invoice_number != payload.invoice_number:
+        # Matched on DocEntry but the number moved. B1 does not renumber a posted
+        # invoice, so this is either a cancel-and-repost that reused the DocEntry or
+        # the wrong DocEntry on the payload. Either way, quietly renaming a stored
+        # invoice would break the ASN the retailer already holds against the old one.
+        result.issues.append(
+            f"DocEntry {payload.b1_invoice_doc_entry} is stored here as invoice "
+            f"'{existing.invoice_number}' but this push calls it "
+            f"'{payload.invoice_number}'. Refusing to renumber a stored invoice — "
+            f"cancel the old one here first if it was reposted."
+        )
+        log.warning(
+            "invoice.doc_entry_renumbered",
+            doc_entry=payload.b1_invoice_doc_entry,
+            stored=existing.invoice_number,
+            pushed=payload.invoice_number,
+        )
+        return result
 
     invoice = _upsert_invoice(db, po, payload, existing)
     result.invoice_id = invoice.id
@@ -202,6 +216,38 @@ def _resolve_po(db: Session, payload: InvoicePush) -> Any:
 
 
 # ── Persistence ───────────────────────────────────────────────────────────────
+
+def _find_existing_invoice(db: Session, payload: Any) -> Any:
+    """
+    Find the stored invoice this push refers to.
+
+    SAP identifies an A/R Invoice by `DocEntry`, which is its immutable primary key, so
+    that is tried first and is what makes this endpoint a true add-or-update for them:
+    a re-push carrying the same DocEntry lands on the same row even if nothing else is
+    stable.
+
+    `invoice_number` is the fallback, and stays the unique column. It is the legal
+    document number, it is what the retailer reconciles against, and the very first
+    push of an invoice often has no DocEntry yet -- B1 assigns it on posting, and the
+    IRN arrives later still. Matching on number alone was the old behaviour; keeping it
+    as the second attempt means nothing that worked before stops working.
+    """
+    from sqlalchemy import select
+
+    from app.models.invoice import EdiInvoice
+
+    doc_entry = getattr(payload, "b1_invoice_doc_entry", None)
+    if doc_entry is not None:
+        found = db.execute(
+            select(EdiInvoice).where(EdiInvoice.b1_invoice_doc_entry == doc_entry)
+        ).scalar_one_or_none()
+        if found is not None:
+            return found
+
+    return db.execute(
+        select(EdiInvoice).where(EdiInvoice.invoice_number == payload.invoice_number)
+    ).scalar_one_or_none()
+
 
 def _upsert_invoice(
     db: Session,

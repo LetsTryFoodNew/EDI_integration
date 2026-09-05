@@ -124,8 +124,8 @@ curl -s "$BASE/auth/me" -H "Authorization: Bearer $TOKEN"
 
 | Table | Push | Read |
 |---|---|---|
-| Customer | `POST /api/master-data/partners` (create, once)<br>`POST /api/master-data/partners/sync` (update, ongoing) | `GET /api/master-data/partners`<br>`GET /api/master-data/partners/{id}` |
-| Item Master | `POST /api/master-data/materials/sync` | `GET /api/master-data/materials` |
+| Customer | `POST /api/master-data/partners` — **add or update**, keyed on `code`<br>`POST /api/master-data/partners/sync` — batch update, existing rows only | `GET /api/master-data/partners`<br>`GET /api/master-data/partners/{id}` |
+| Item Master | `POST /api/master-data/materials` — **add or update**, keyed on `item_code`<br>`POST /api/master-data/materials/sync` — batch, same behaviour | `GET /api/master-data/materials` |
 | SKU Mapping | `POST /api/master-data/sku-mappings/sync` | `GET /api/master-data/sku-mappings` |
 | Ship-to | `POST /api/master-data/ship-to/sync` | `GET /api/master-data/ship-to` |
 | Bill-to | `POST /api/master-data/bill-to/sync` | `GET /api/master-data/bill-to` |
@@ -137,7 +137,6 @@ curl -s "$BASE/auth/me" -H "Authorization: Bearer $TOKEN"
 | Endpoint | Purpose |
 |---|---|
 | `PUT /api/master-data/partners/{id}` | Edit one customer |
-| `POST /api/master-data/materials` | Add one item manually |
 | `PUT /api/master-data/materials/{id}` | Edit one item |
 | `PUT /api/master-data/ship-to/{id}` | Assign a DC to a B1 warehouse |
 | `PUT /api/master-data/bill-to/{id}` | Assign a billing entity to a B1 BP address |
@@ -145,6 +144,59 @@ curl -s "$BASE/auth/me" -H "Authorization: Bearer $TOKEN"
 | `PUT /api/master-data/warehouses/{id}` | Park a warehouse locally / add a note |
 
 There is deliberately **no** `PUT` for SKU mappings — see [§9.3](#93-why-there-is-no-put).
+
+---
+
+## 4a. One endpoint for add **and** update
+
+Every push endpoint decides for itself whether a record is new. You never have to ask
+first, and you never get a `409` for sending something twice — send the record, and it
+is created if absent and updated if present.
+
+| Endpoint | Existence is decided on | Maps to |
+|---|---|---|
+| `POST /api/master-data/materials` | `item_code` | `ItemCode` |
+| `POST /api/master-data/partners` | `code` | `CardCode` |
+| `POST /api/master-data/ship-to/sync` | `partner_code` + `buyer_whs_code` | `CardCode` + Address |
+| `POST /api/master-data/bill-to/sync` | `partner_code` + `buyer_bill_to_code` | `CardCode` + Address |
+| `POST /api/master-data/sku-mappings/sync` | `partner_code` + `buyer_sku` | `CardCode` + customer's item code |
+| `POST /api/invoices` | `b1_invoice_doc_entry`, then `invoice_number` | `DocEntry` |
+
+**Single-record endpoints answer `201` when they created and `200` when they updated**,
+so you can tell which happened without reading the body. Batch (`/sync`) endpoints
+answer `200` and report counts:
+
+```json
+{ "created": 3, "updated": 12, "skipped": 1, "errors": ["..."] }
+```
+
+### What an update will not overwrite
+
+Three things are deliberately protected, because a Business Partner or Item record in
+SAP has nothing to say about them and a routine refresh must not undo a deliberate
+local decision:
+
+| Never overwritten | Why |
+|---|---|
+| Customer integration config — `source_channel`, `gmail_label`, `webhook_secret`, `asn_sla_hours` | Describes how we *fetch* that retailer's orders. Set once when the customer is created; on later pushes it is filled only where it is still empty. Sending `source_channel` for a live API customer will not demote it — that would silently stop its PO ingestion. |
+| Ops mappings — `b1_whs_code`, `b1_bill_to_code`, `mapping_status` | Assigned by our operations team. Sync writes only the address and GSTIN fields around them. |
+| Soft-deleted records | A person removed the row. A push answers `409` rather than resurrecting it. Restore it first if the removal was wrong. |
+
+### Two keys worth confirming
+
+**SKU mappings are keyed on `buyer_sku`, not `b1_item_code`.** A customer can list the
+same item under more than one of their own codes — different pack presentations, a
+relisting — and keying on the item would make the second push overwrite the first. The
+database enforces this: `sku_mapping` is unique on `(customer, buyer_sku)`. `b1_item_code`
+is still required on every row and must already exist in Item Master, but it identifies
+*what the mapping points at*, not *which mapping this is*.
+
+**Invoices are matched on `DocEntry` first, `invoice_number` second.** `DocEntry` is your
+immutable key, so a re-push carrying it lands on the same row. The fallback matters
+because the first push of an invoice often has no `DocEntry` yet, and `invoice_number` is
+the legal number the retailer reconciles against. If a `DocEntry` arrives naming a
+different `invoice_number` than the one stored, the push is **rejected** rather than
+renaming a stored invoice — the retailer may already hold an ASN quoting the old number.
 
 ---
 
@@ -253,9 +305,10 @@ Every failure returns the same envelope:
 
 Retail partners. Stored in `trading_partners`.
 
-### 7.1 Create — `POST /api/master-data/partners`
+### 7.1 Add or update — `POST /api/master-data/partners`
 
-A customer must exist before sync can update it. This creates it. **Once per customer.**
+Send the customer. It is created if `code` is new and updated if it already exists —
+`201` and `200` respectively. Safe to send repeatedly.
 
 ```json
 {
@@ -304,7 +357,9 @@ The response includes a **`warnings`** array:
 
 | Situation | Response |
 |---|---|
-| `code` already exists | `409 CONFLICT` |
+| `code` is new | `201` — created |
+| `code` already exists | `200` — updated; integration config left alone (see [§4a](#4a-one-endpoint-for-add-and-update)) |
+| `code` exists but is soft-deleted here | `409 CONFLICT` — restore it first |
 | Invalid `source_channel` | `422` listing allowed values |
 
 ### 7.2 Update — `POST /api/master-data/partners/sync`
@@ -327,7 +382,11 @@ The response includes a **`warnings`** array:
 
 Required: `code`, `name`. `status` may also be sent as `is_active`.
 
-> ### ⚠️ Customer sync is **update-only**
+> ### ⚠️ The **batch** customer endpoint is update-only
+>
+> `POST /partners/sync` takes a list and updates existing rows. A `code` it has never
+> seen is **skipped**, not created — use `POST /partners` (§7.1) to add one, which is
+> the add-or-update endpoint and accepts a single record.
 >
 > A `code` that does not already exist is **skipped**, not created:
 >
