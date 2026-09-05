@@ -1,5 +1,37 @@
 # Changelog
 
+## Malformed JSON said "[401] JSON decode error" (2026-09-05)
+
+A caller adding a phone number to a customer payload got:
+
+    { "field": "[401]", "in": "body", "problem": "JSON decode error" }
+
+and went looking at the add-or-update logic, because that reads like something wrong
+with a field. It was a missing comma between two array entries.
+
+Pydantic reports an unparseable body as `json_invalid` with
+`loc == ("body", <character offset>)`, so the generic field-error path rendered the
+**offset** as a **field name**. The response also said `422 VALIDATION_ERROR`, implying
+fields had been read and judged, when in fact nothing had been parsed at all.
+
+Now `400 MALFORMED_JSON`, carrying the parser's own message, the offset translated into
+line and column, and the offending line quoted back with the one before it — which is
+where a missing comma actually belongs:
+
+    { "in": "body",
+      "problem": "Expecting ',' delimiter",
+      "at": "line 16, column 5 (character 401)",
+      "line": "\"+911244567891\"",
+      "previous_line": "\"+911244567890\"" }
+
+The hint says nothing was created or updated, and names the three usual causes: a
+missing comma between entries, a trailing comma before `]` or `}`, and smart quotes
+pasted from a document.
+
+The upsert itself was never involved. Confirmed by pushing the same customer twice with
+valid JSON: 200 both times, the third phone number applied, `source_channel` and
+`gmail_label` intact, one row in the table.
+
 ## A Postman collection to hand the SAP team (2026-09-05)
 
 The full collection is 81 requests including dashboards, the PO lifecycle, the inboxes

@@ -183,6 +183,34 @@ def register_error_handlers(app: FastAPI) -> None:
                 ),
             )
 
+        # ── Special case: the body is not valid JSON at all ───────────────────
+        # Pydantic reports json_invalid with loc == ("body", <character offset>), so
+        # the generic path below renders the offset as a field name -- "[401]" -- which
+        # reads like a problem with a field rather than a typo in the JSON. Someone
+        # chasing that spent a while looking at the endpoint's logic before the comma.
+        decode = next((e for e in raw if e.get("type") == "json_invalid"), None)
+        if decode is not None:
+            body_bytes = await request.body()
+            where = _json_error_location(decode, body_bytes)
+            log.warning("api.malformed_json", request_id=rid, path=request.url.path,
+                        detail=where["problem"])
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content=_envelope(
+                    "MALFORMED_JSON",
+                    "The request body is not valid JSON, so no field was read.",
+                    details=[where],
+                    hint=(
+                        "Nothing was created or updated. Paste the body into a JSON "
+                        "validator, or in Postman use Body -> raw -> JSON and press "
+                        "Beautify — it highlights the offending character. The usual "
+                        "causes are a missing comma between two entries, a trailing "
+                        "comma before ] or }, or a smart quote pasted from a document."
+                    ),
+                    request_id=rid,
+                ),
+            )
+
         # ── Normal field-level validation errors ──────────────────────────────
         details = [
             {
@@ -304,3 +332,40 @@ def register_error_handlers(app: FastAPI) -> None:
                 request_id=rid,
             ),
         )
+
+
+def _json_error_location(err: dict, body: bytes) -> dict:
+    """
+    Turn Pydantic's json_invalid into something a person can act on.
+
+    It carries the parser's own message ("Expecting ',' delimiter at line 16 column 5")
+    in ctx.error and the character offset in loc. Both are useful; neither is a field,
+    which is why they must not be reported as one. The offending line is quoted back
+    because "line 16" means nothing without looking, and a caller reading this in a
+    Postman response pane usually cannot see their own request.
+    """
+    detail = str((err.get("ctx") or {}).get("error") or err.get("msg") or "invalid JSON")
+
+    loc = err.get("loc") or ()
+    offset = next((p for p in loc if isinstance(p, int)), None)
+
+    where: dict = {"in": "body", "problem": detail}
+    if offset is None:
+        return where
+
+    try:
+        text = body.decode("utf-8", errors="replace")
+    except Exception:
+        return where
+
+    line_no = text.count("\n", 0, offset) + 1
+    line_start = text.rfind("\n", 0, offset) + 1
+    column = offset - line_start + 1
+    lines = text.splitlines()
+
+    where["at"] = f"line {line_no}, column {column} (character {offset})"
+    if 1 <= line_no <= len(lines):
+        where["line"] = lines[line_no - 1].strip()[:120]
+        if line_no >= 2:
+            where["previous_line"] = lines[line_no - 2].strip()[:120]
+    return where

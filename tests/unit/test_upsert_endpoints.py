@@ -169,3 +169,74 @@ class TestInvoiceMatching:
         payload = SimpleNamespace(b1_invoice_doc_entry=1, invoice_number="INV-NEW")
         found, _ = self._find(payload, None, None)
         assert found is None
+
+
+class TestMalformedJsonIsReadable:
+    """
+    A body that is not valid JSON is not a field problem, and must not be reported as
+    one.
+
+    Pydantic reports `json_invalid` with `loc == ("body", <character offset>)`, so the
+    generic field-error path rendered the offset as a field name — `"field": "[401]"`,
+    `"problem": "JSON decode error"`. That reads like something wrong with a field, and
+    it sent someone looking at the endpoint's add-or-update logic when the actual cause
+    was a missing comma between two phone numbers.
+    """
+
+    @staticmethod
+    def _location(text, offset, msg="Expecting ',' delimiter"):
+        from app.api.error_handlers import _json_error_location
+
+        err = {"type": "json_invalid", "loc": ("body", offset), "ctx": {"error": msg}}
+        return _json_error_location(err, text.encode())
+
+    BODY = (
+        '{\n'
+        '  "code": "DEMOMART",\n'
+        '  "phone_numbers": [\n'
+        '    "+919812345601"\n'
+        '    "+911244567890"\n'
+        '  ]\n'
+        '}'
+    )
+
+    def test_reports_the_parser_message_not_a_generic_one(self) -> None:
+        where = self._location(self.BODY, self.BODY.index('"+911244567890"'))
+        assert where["problem"] == "Expecting ',' delimiter"
+        assert "field" not in where, "a character offset is not a field"
+
+    def test_translates_the_offset_into_line_and_column(self) -> None:
+        # "character 401" alone is unusable to someone reading a Postman response pane.
+        offset = self.BODY.index('"+911244567890"')
+        where = self._location(self.BODY, offset)
+        assert where["at"] == f"line 5, column 5 (character {offset})"
+
+    def test_quotes_the_offending_line_and_the_one_before(self) -> None:
+        # The line before is where a missing comma actually belongs.
+        where = self._location(self.BODY, self.BODY.index('"+911244567890"'))
+        assert where["line"] == '"+911244567890"'
+        assert where["previous_line"] == '"+919812345601"'
+
+    def test_an_offset_on_the_first_line_has_no_previous_line(self) -> None:
+        where = self._location(self.BODY, 1)
+        assert where["at"].startswith("line 1,")
+        assert "previous_line" not in where
+
+    def test_survives_an_error_carrying_no_offset(self) -> None:
+        from app.api.error_handlers import _json_error_location
+
+        where = _json_error_location(
+            {"type": "json_invalid", "loc": ("body",), "ctx": {"error": "boom"}}, b"{}"
+        )
+        assert where == {"in": "body", "problem": "boom"}
+
+    def test_survives_a_body_that_is_not_valid_utf8(self) -> None:
+        # A truncated multi-byte sequence must not turn a bad-JSON report into a 500.
+        from app.api.error_handlers import _json_error_location
+
+        where = _json_error_location(
+            {"type": "json_invalid", "loc": ("body", 2), "ctx": {"error": "bad"}},
+            b'{"a": \xff\xfe}',
+        )
+        assert where["problem"] == "bad"
+        assert where["at"].startswith("line 1,")
